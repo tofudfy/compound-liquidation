@@ -5,11 +5,12 @@ from tronpy.abi import trx_abi
 from web3 import Web3
 
 from configuration import (
-    provider, NETWORK, COMPOUND_ALIAS, COMPOUND, SELECTOR, EXP_SCALE,
+    provider, NETWORK, COMPOUND, SELECTOR, EXP_SCALE,
     log_v2, json_file_load, config_init, get_reserves
 )
 
 from get_configs_from_comet import (
+    comet_configs_init,
     get_collateral_factor
 )
 
@@ -18,14 +19,13 @@ COMPOUND_V3_USERS_FILTER_TEMP = """
     "address": "",
     "topics": [
         [
-            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
             "0x1a2a22cb034d26d1854bdc6666a5b91fe25efbbb5dcad3b0355478d6f5c362a1",
             "0x13ed6866d4e1ee6da46f845c46d7e54120883d75c5ea9a2dacc1c4ca8984ab80",
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
             "0x875352fb3fadeb8c0be7cbbe8ff761b308fa7033470cd0287f02f3436fd76cb9",
             "0x4dec04e750ca11537cabcd8a9eab06494de08da3735bc8871cd41250e190bc04",
             "0xa91e67c5ea634cd43a12c5a482724b03de01e85ca68702a53d0c2f45cb7c1dc5",
-            "0x3bad0c59cf2f06e7314077049f48a93578cd16f5ef92329f1dab1420a99c177e",
-            "0x70483e6592cd5182d45ac970e05bc62cdcc90e9d8ef2c2dbe686cf383bcd7fc5"
+            "0x3bad0c59cf2f06e7314077049f48a93578cd16f5ef92329f1dab1420a99c177e"
         ],
         []
     ]
@@ -64,9 +64,6 @@ Notice: borrowIndex, totalReserves
 
 AccrueInterest (uint256 cashPrior, uint256 interestAccumulated, uint256 borrowIndex, uint256 totalBorrows)
 [topic0] 0x4dec04e750ca11537cabcd8a9eab06494de08da3735bc8871cd41250e190bc04
-
-NewLiquidationIncentive(oldLiquidationIncentiveMantissa, newLiquidationIncentiveMantissa)
-[topic0] 
 """
 EVENT_ABI = {
     "0x1a2a22cb034d26d1854bdc6666a5b91fe25efbbb5dcad3b0355478d6f5c362a1": {
@@ -113,11 +110,6 @@ EVENT_ABI = {
         "name": "AccrueInterest_delegate",
         "index_topic": [],
         "data": ["uint256", "uint256", "uint256", "uint256"]
-    },
-    "0x70483e6592cd5182d45ac970e05bc62cdcc90e9d8ef2c2dbe686cf383bcd7fc5": {
-        "name": "NewCollateralFactor",
-        "index_topic": [],
-        "data": ["address", "uint256", "uint256"]
     }
 }
 
@@ -143,14 +135,11 @@ if FILE_PATH_START == TEMPLATE:
 
 users_health_factor = {}
 
+# todo: initialization
 borrow_index_dict = {}
 total_reserve_dict = {}
 total_borrow_dict = {}
 total_supply_dict = {}
-
-
-def get_liquidation_incentive():
-    return users_raw['liq_incentive']
 
 
 def get_borrow_index(reserve):
@@ -247,13 +236,13 @@ def log_parser(log):
         check_user_and_reserve(from_user, reserve)
         check_user_and_reserve(to_user, reserve)
 
-        if total_reserve_dict.get(reserve, None) is None:
+        if total_supply_dict.get(reserve, None) is None:
             total_supply_dict[reserve] = 0
 
-        if from_user == COMPOUND_ALIAS['comet'].lower():
+        if from_user == reserve.lower():
             total_supply_dict[reserve] += amount
 
-        if to_user == COMPOUND_ALIAS['comet'].lower():
+        if to_user == reserve.lower():
             total_supply_dict[reserve] -= amount
 
         users_raw['users'][from_user][reserve][0] -= amount
@@ -262,6 +251,7 @@ def log_parser(log):
                      format(from_user, amount, reserve, users_raw['users'][from_user][reserve][0]))
         log_v2.debug("{} receive {} amount of reserve {}, current COLLATERAL balance {}".
                      format(to_user, amount, reserve, users_raw['users'][from_user][reserve][0]))
+        log_v2.debug("reserve {} total supply {}".format(reserve, total_supply_dict[reserve]))
 
     if obj['name'] == 'RepayBorrow':
         borrower = '0x' + trx_abi.encode_single("address", args_data[1]).hex()[24:]
@@ -273,8 +263,8 @@ def log_parser(log):
         users_raw['users'][borrower][reserve][1] = amount
         users_raw['users'][borrower][reserve][2] = borrow_index_dict[reserve]
         total_borrow_dict[reserve] = total_borrow
-        log_v2.debug("borrower {} {} {} amount of reserve {}, current DEBT balance {}, borrow index {}".
-                     format(borrower, obj['name'], repay_amount, reserve, amount, borrow_index_dict[reserve]))
+        log_v2.debug("borrower {} {} {} amount of reserve {}, current DEBT balance {}, borrow index {}, total borrow {}".
+                     format(borrower, obj['name'], repay_amount, reserve, amount, borrow_index_dict[reserve], total_borrow_dict[reserve]))
 
     if obj['name'] == 'Borrow':
         borrower = '0x' + trx_abi.encode_single("address", args_data[0]).hex()[24:]
@@ -286,15 +276,15 @@ def log_parser(log):
         users_raw['users'][borrower][reserve][1] = amount
         users_raw['users'][borrower][reserve][2] = borrow_index_dict[reserve]
         total_borrow_dict[reserve] = total_borrow
-        log_v2.debug("borrower {} {} {} amount of reserve {}, current DEBT balance {}, borrow index {}".
-                     format(borrower, obj['name'], borrow_amount, reserve, amount, borrow_index_dict[reserve]))
+        log_v2.debug("borrower {} {} {} amount of reserve {}, current DEBT balance {}, borrow index {}, total borrow {}".
+                     format(borrower, obj['name'], borrow_amount, reserve, amount, borrow_index_dict[reserve], total_borrow_dict[reserve]))
 
-    if obj['name'] == 'AccrueInterest' or 'AccrueInterest_delegate':
+    if obj['name'] == 'AccrueInterest' or obj['name'] == 'AccrueInterest_delegate':
         if obj['name'] == 'AccrueInterest_delegate':
             deviation = 1
         else:
             deviation = 0
-
+        
         interest_accumulated = args_data[0+deviation]
         borrow_index = args_data[1+deviation]
         total_borrow = args_data[2+deviation]
@@ -305,18 +295,13 @@ def log_parser(log):
         reserve_factor = get_collateral_factor(reserve)
         total_reserve_dict[reserve] += reserve_factor * interest_accumulated // EXP_SCALE
 
-        log_v2.debug("reserve {} update: borrow index {}, total reserves {}".
-                     format(reserve, borrow_index_dict[reserve], total_reserve_dict[reserve]))
+        log_v2.debug("reserve {} update: borrow index {}, total reserves {}, total borrow {}".
+                     format(reserve, borrow_index_dict[reserve], total_reserve_dict[reserve], total_borrow_dict[reserve]))
 
-    if obj['name'] == 'ReservesAdded' or 'ReservesReduced':
+    if obj['name'] == 'ReservesAdded' or obj['name'] == 'ReservesReduced':
         new = args_data[2]
         total_reserve_dict[reserve] = new
         log_v2.debug("reserve {} update: total reserves {}".format(reserve, total_reserve_dict[reserve]))
-
-    if obj['name'] == 'NewLiquidationIncentive':
-        new = args_data[1]
-        users_raw['liq_incentive'] = new
-        log_v2.debug("new liquidation inventive updated: {}".format(users_raw['liq_incentive']))
 
 
 # currently unused
@@ -335,10 +320,11 @@ def init():
 
     filt = json.loads(COMPOUND_V3_USERS_FILTER_TEMP)
     filt['address'] = get_reserves()
+    print(filt)
 
     while users_raw['last_update'] <= block_number:
         from_block = users_raw['last_update']
-        to_block = from_block + 499
+        to_block = from_block + 999
         if to_block > block_number:
             to_block = block_number
 
@@ -351,8 +337,10 @@ def init():
             log_v2.error(e)
             time.sleep(2)
             continue
-
-        log_parser_wrap(logs)
+        
+        if len(logs) != 0:
+            log_parser_wrap(logs)
+        
         users_raw['last_update'] = to_block + 1
 
         count += 1
@@ -425,4 +413,5 @@ def set_health_factor(user, hf, last_update):
 
 if __name__ == '__main__':
     config_init()
+    comet_configs_init()
     get_users_start()

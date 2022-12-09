@@ -15,7 +15,7 @@ from multiprocessing import cpu_count, Manager, Pool
 
 from configuration import (
     config_init, get_reserves, get_signal_filters, token_aggregator_mapping,
-    price_cache_read, price_cache_write,
+    price_cache_read, price_cache_write, get_liquidation_incentive,
     COMPOUND_ALIAS, LIQUDATION_LOG_LEVEL, EXP_SCALE,
     CONNECTION, NETWORK, provider, cerc20_interface
 )
@@ -23,7 +23,7 @@ from configuration import (
 from get_users_from_logs import (
     COMPOUND_V3_USERS_FILTER_TEMP, log_parser_wrap,
     get_exchange_rate, get_users_start,
-    get_borrow_index, get_liquidation_incentive,
+    get_borrow_index,
     users_filtering, set_health_factor
 )
 

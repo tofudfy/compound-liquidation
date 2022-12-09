@@ -5,7 +5,7 @@ from logger import Logger
 from config_utils import json_file_load
 
 # NOTICE: modify the argument to configure network and project
-PROVIDER_TYPE = 'http'
+PROVIDER_TYPE = 'ipc'
 NETWORK = "Ethereum"
 SELECTOR = 'v3'
 LIQUDATION_LOG_LEVEL = logging.DEBUG
