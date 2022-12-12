@@ -2,12 +2,11 @@
 from tronpy.abi import trx_abi
 from web3 import Web3
 from configuration import (
-    log_v2, provider, cerc20_interface, get_reserves
+    COMPOUND_ALIAS, log_v2, comptroller,
+    json_file_load
 )
 
-collateral_factor = {}
-liquidation_incentive = 0
-
+COMET_CONFIGS_PATH_RECORD = COMPOUND_ALIAS['comet_configs_file']
 COMPOUND_V3_CONFIGS_FILTER_TEMP = """
 {
     "address": "",
@@ -41,25 +40,22 @@ EVENT_ABI = {
     }
 }
 
+collateral_factor_full = json_file_load(COMET_CONFIGS_PATH_RECORD)
+collateral_factor = collateral_factor_full['reserves'] 
+liquidation_incentive = 0
+
 
 def comet_configs_init():
-    # global liquidation_incentive
-    w3 = Web3(provider)
-
-    reserves = get_reserves()
-    for token_addr in reserves:
-        token_contract = w3.eth.contract(address=token_addr, abi=cerc20_interface['abi'])
-        collateral_factor[token_addr] = token_contract.functions.reserveFactorMantissa().call()
-
-    log_v2.debug("comet configs init: {}".format(collateral_factor))
-    # todo: getStorageAt?
-    # liquidation_incentive = 0
+    global liquidation_incentive
+    liquidation_incentive = comptroller.functions.liquidationIncentiveMantissa().call()
+    log_v2.debug("comet configs init: {{\"liquidationIncentive\": {}, \"reserveFactor\": {}}}".
+                format(liquidation_incentive, collateral_factor))
 
 
 def comet_configs_log_parser_wrap(logs):
     num_list = []
     for log in logs:
-        log_parser(log)
+        comet_log_parser(log)
         if len(num_list) == 0:
             num_list.append(log['blockNumber'])
 
@@ -69,7 +65,7 @@ def comet_configs_log_parser_wrap(logs):
     log_v2.info("comet configs updated, block number: {}".format(num_list))
 
 
-def log_parser(log):
+def comet_log_parser(log):
     if log['removed']:
         log_v2.info("log is removed {}".format(log))
         return
@@ -91,17 +87,25 @@ def log_parser(log):
         new = args_data[2]
         reserve = '0x' + trx_abi.encode_single("address", args_data[0]).hex()[24:]
         collateral_factor[reserve] = new
-        log_v2.debug("new collateral factor of reserve {} updated: {}".format(reserve, collateral_factor))
+        log_v2.debug("new collateral factor of reserve {} updated: {}, height: {}".format(reserve, collateral_factor[reserve], log['blockNumber']))
     
     if obj['name'] == 'NewLiquidationIncentive':
         global liquidation_incentive
         new = args_data[1]
         liquidation_incentive = new
-        log_v2.debug("new liquidation inventive updated: {}".format(users_raw['liq_incentive']))
+        log_v2.debug("new liquidation inventive updated: {}, height: {}".format(liquidation_incentive, log['blockNumber']))
 
 
 def get_collateral_factor(reserve):
     return collateral_factor[reserve]
+
+
+def get_collateral_lastupdate():
+    return collateral_factor_full['last_update']
+
+
+def get_collateral_factor_dict():
+    return collateral_factor_full
 
 
 def get_liquidation_incentive():
@@ -109,6 +113,9 @@ def get_liquidation_incentive():
 
 
 if __name__ == '__main__':
-    print(Web3.sha3(text="NewLiquidationIncentive(uint256,uint256)").hex())
-    print(Web3.sha3(text="NewCollateralFactor(address,uint256,uint256)").hex())
-    print(Web3.sha3(text="ReservesReduced(address,uint256,uint256)").hex())
+    # print(Web3.sha3(text="NewLiquidationIncentive(uint256,uint256)").hex())
+    # print(Web3.sha3(text="NewCollateralFactor(address,uint256,uint256)").hex())
+    # print(Web3.sha3(text="ReservesReduced(address,uint256,uint256)").hex())
+
+    comet_configs_init()
+    print(get_collateral_factor_dict())

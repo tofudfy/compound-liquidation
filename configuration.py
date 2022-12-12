@@ -15,8 +15,11 @@ ADDRESS_ZERO = "0x0000000000000000000000000000000000000000"
 CONNECTION = {
     'Ethereum': {
         'ipc': "/data/eth/ethereum/geth.ipc",
+        # 'http': "https://eth-mainnet.g.alchemy.com/v2/-rVE6Yp-pyFoYbe7wzM70zDUvN_Vlwkb",
         'http': "https://eth-mainnet.g.alchemy.com/v2/1vSGEJ78c6cVpaXsQxP3fA6D0mKVBGMs",
-        'ws': "wss://eth-mainnet.g.alchemy.com/v2/1vSGEJ78c6cVpaXsQxP3fA6D0mKVBGMs",
+        # 'http': "https://eth-mainnet.g.alchemy.com/v2/hAtPgPTh1OhcpfjZq9mWz08ib4Zf_lOM",
+        # 'ws': "wss://eth-mainnet.g.alchemy.com/v2/1vSGEJ78c6cVpaXsQxP3fA6D0mKVBGMs",
+        'ws': "ws://176.9.111.84:58546",
         'light': {
             'url': "ws://localhost:51301",
             'auth': "085da4b6a041efcef1ef681e5c9c"
@@ -58,8 +61,10 @@ COMPOUND = {
                 'liq': ['liquidation_ethereum_compound_v3.log', 'liq_ethereum_com_v3'],
                 'event': ['events_ethereum_compound_v3.log', 'eve_ethereum_com_v3'],
             },
+            'ctoken_congis_file': "./users/ctoken_configs_ethereum_compound_v3.json",
+            'comet_configs_file': "./users/comet_configs_ethereum_compound_v3.json",
             'users_file': "./users/users_ethereum_compound_v3.json",
-            'users_file_status': 0  # 1 for continue; 0 for init from template
+            'users_file_status': 1  # 1 for continue; 0 for init from template
         }
     },
     # polygon: https://docs.aave.com/developers/v/2.0/deployed-contracts/matic-polygon-market
@@ -211,6 +216,11 @@ def query_reserves_aggregator(reserve_configs):
     return dic, unrecognized_addr, aggregator_filter
 
 
+def price_scale(reserve, price):
+    base_units = RESERVES_CONFIGS[reserve]['config'][3]
+    return 10 ** 28 * price // base_units
+
+
 def price_cache_init(reserves_configs):
     for reserve, infos in reserves_configs.items():
         ctoken = infos['config'][0]
@@ -246,10 +256,9 @@ def config_init():
     SIGNAL_FILTER[NETWORK][SELECTOR]['aggregator'].extend(aggregator_filter)
     log_v2.info("Complete aggregator filter: {}".format(SIGNAL_FILTER[NETWORK][SELECTOR]['aggregator']))
 
+    price_cache_init(RESERVES_CONFIGS)
+    log_v2.info("Reserve prices: {}".format(price_dict))
+
 
 if __name__ == '__main__':
     config_init()
-
-    # test only
-    # prices = query_asset_price(RESERVES_CONFIGS)
-    # print("Reserve prices: {}".format(prices))

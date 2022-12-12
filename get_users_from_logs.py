@@ -5,13 +5,15 @@ from tronpy.abi import trx_abi
 from web3 import Web3
 
 from configuration import (
-    provider, NETWORK, COMPOUND, SELECTOR, EXP_SCALE,
-    log_v2, json_file_load, config_init, get_reserves
+    provider, COMPOUND_ALIAS, EXP_SCALE,
+    log_v2, json_file_load, cerc20_interface,
+    config_init, get_reserves
 )
 
 from get_configs_from_comet import (
-    comet_configs_init,
-    get_collateral_factor
+    COMET_CONFIGS_PATH_RECORD,
+    comet_configs_init, comet_log_parser,
+    get_collateral_lastupdate, get_collateral_factor_dict
 )
 
 COMPOUND_V3_USERS_FILTER_TEMP = """
@@ -64,6 +66,10 @@ Notice: borrowIndex, totalReserves
 
 AccrueInterest (uint256 cashPrior, uint256 interestAccumulated, uint256 borrowIndex, uint256 totalBorrows)
 [topic0] 0x4dec04e750ca11537cabcd8a9eab06494de08da3735bc8871cd41250e190bc04
+
+NewReserveFactor(uint256 oldReserveFactorMantissa, uint256 newReserveFactorMantissa)
+[topics0] 
+Notice: reeserveFactor
 """
 EVENT_ABI = {
     "0x1a2a22cb034d26d1854bdc6666a5b91fe25efbbb5dcad3b0355478d6f5c362a1": {
@@ -110,7 +116,12 @@ EVENT_ABI = {
         "name": "AccrueInterest_delegate",
         "index_topic": [],
         "data": ["uint256", "uint256", "uint256", "uint256"]
-    }
+    },
+    "": {
+        "name": "NewReserveFactor",
+        "index_topic": [],
+        "data": ["uint256", "uint256"]
+    },
 }
 
 '''
@@ -122,24 +133,61 @@ EVENT_ABI = {
 }
 '''
 TEMPLATE = "./users/users_template.json"
-ALIAS = COMPOUND[NETWORK][SELECTOR]
-if ALIAS['users_file_status'] == 1:
-    FILE_PATH_START = ALIAS['users_file']
+if COMPOUND_ALIAS['users_file_status'] == 1:
+    FILE_PATH_START = COMPOUND_ALIAS['users_file']
 else:
     FILE_PATH_START = TEMPLATE
-FILE_PATH_RECORD = ALIAS['users_file']
+FILE_PATH_RECORD = COMPOUND_ALIAS['users_file']
 
 users_raw = json_file_load(FILE_PATH_START)
 if FILE_PATH_START == TEMPLATE:
-    users_raw['last_update'] = ALIAS['init_block_number']
+    users_raw['last_update'] = COMPOUND_ALIAS['init_block_number']
+
+CONFIGS_PATH_RECORD = COMPOUND_ALIAS['ctoken_congis_file']
+ctoken_configs = json_file_load(CONFIGS_PATH_RECORD)
+borrow_index_dict = ctoken_configs['borrowIndex']
+total_reserve_dict = ctoken_configs['totalReserves']
+total_borrow_dict = ctoken_configs['totalBorrows']
+total_supply_dict = ctoken_configs['totalSupply']
 
 users_health_factor = {}
+reserve_factor = {}
 
-# todo: initialization
-borrow_index_dict = {}
-total_reserve_dict = {}
-total_borrow_dict = {}
-total_supply_dict = {}
+
+def ctoken_configs_init():
+    w3 = Web3(provider)
+    block_num = w3.eth.get_block_number()
+
+    reserves = get_reserves()
+    for token_addr in reserves:
+        token_contract = w3.eth.contract(address=token_addr, abi=cerc20_interface['abi'])
+        borrow_index_dict[token_addr] = token_contract.functions.borrowIndex().call()
+        total_reserve_dict[token_addr] = token_contract.functions.totalReserves().call()
+        total_borrow_dict[token_addr] = token_contract.functions.totalBorrows().call()
+        total_supply_dict[token_addr] = token_contract.functions.totalSupply().call()
+
+    log_v2.debug("block: {}, ctoken configs init: {{\"borrowIndex\": {}, \"totalBorrows\": {}, \"totalReserves\": {}, \"totalSupply\": {}}}".
+                format(block_num, borrow_index_dict, total_borrow_dict, total_reserve_dict, total_supply_dict))
+
+
+def query_reserve_factor():
+    w3 = Web3(provider)
+    reserves = get_reserves()
+    for token_addr in reserves:
+        token_contract = w3.eth.contract(address=token_addr, abi=cerc20_interface['abi'])
+        reserve_factor[token_addr] = token_contract.functions.reserveFactorMantissa().call()
+
+
+def ctoken_configs_init_v2():
+    ctoken_configs = json_file_load(CONFIGS_PATH_RECORD)
+    borrow_index_dict = ctoken_configs['borrowIndex']
+    total_reserve_dict = ctoken_configs['totalReserves']
+    total_borrow_dict = ctoken_configs['totalBorrows']
+    total_supply_dict = ctoken_configs['totalSupply']
+    query_reserve_factor()
+
+    log_v2.debug("ctoken configs init: {{\"borrowIndex\": {}, \"totalBorrows\": {}, \"totalReserves\": {}, \"totalSupply\": {}}}".
+                format(borrow_index_dict, total_borrow_dict, total_reserve_dict, total_supply_dict))
 
 
 def get_borrow_index(reserve):
@@ -203,7 +251,15 @@ def log_parser_wrap(logs):
         if log['blockNumber'] != num_list[-1]:
             num_list.append(log['blockNumber'])
 
-    log_v2.info("users updated, block number: {}".format(num_list))
+    if len(num_list) == 0:
+        return
+
+    trim_patch()
+    # users_raw['last_update'] = num_list[-1] + 1
+    # json_write_to_file(users_raw, FILE_PATH_RECORD)
+    # configs_write_to_file(users_raw['last_update'])
+
+    log_v2.info("users updated: from block {} to {}".format(num_list[0], num_list[-1]))
 
 
 def log_parser(log):
@@ -247,6 +303,7 @@ def log_parser(log):
 
         users_raw['users'][from_user][reserve][0] -= amount
         users_raw['users'][to_user][reserve][0] += amount
+
         log_v2.debug("{} transfer {} amount of reserve {}, current COLLATERAL balance {}".
                      format(from_user, amount, reserve, users_raw['users'][from_user][reserve][0]))
         log_v2.debug("{} receive {} amount of reserve {}, current COLLATERAL balance {}".
@@ -292,8 +349,9 @@ def log_parser(log):
         borrow_index_dict[reserve] = borrow_index
         total_borrow_dict[reserve] = total_borrow
 
-        reserve_factor = get_collateral_factor(reserve)
-        total_reserve_dict[reserve] += reserve_factor * interest_accumulated // EXP_SCALE
+        if total_reserve_dict.get(reserve, None) is None:
+            total_reserve_dict[reserve] = 0 
+        total_reserve_dict[reserve] += reserve_factor[reserve] * interest_accumulated // EXP_SCALE
 
         log_v2.debug("reserve {} update: borrow index {}, total reserves {}, total borrow {}".
                      format(reserve, borrow_index_dict[reserve], total_reserve_dict[reserve], total_borrow_dict[reserve]))
@@ -303,28 +361,92 @@ def log_parser(log):
         total_reserve_dict[reserve] = new
         log_v2.debug("reserve {} update: total reserves {}".format(reserve, total_reserve_dict[reserve]))
 
+    if obj['name'] == 'NewReserveFactor':
+        new = args_data[1]
+        reserve_factor[reserve] = new
+        log_v2.debug("reserve {} update: reserve factor {}".format(reserve, reserve_factor[reserve]))
+ 
 
 # currently unused
 def update_timestamp(time_stamp):
     users_raw['last_update'] = time_stamp
 
 
+def json_write_to_file(data, file_path):
+    json_object = json.dumps(data, indent=4)
+    with open(file_path, "w") as outfile:
+        outfile.write(json_object) 
+
+
+def configs_write_to_file(last_updated):
+    ctoken_configs = {
+        "borrowIndex": borrow_index_dict,
+        "totalBorrows": total_borrow_dict,
+        "totalReserves": total_reserve_dict,
+        "totalSupply": total_supply_dict,
+        "lastUpdated": last_updated
+    }
+    json_write_to_file(ctoken_configs, CONFIGS_PATH_RECORD)
+
+
+def query_events_loop(filt, log_parser, last_update, target, hook):
+    w3 = Web3(provider)
+
+    while last_update <= target:
+        from_block = last_update
+        to_block = from_block + 1999
+        if to_block > target:
+            to_block = target
+
+        filt['fromBlock'] = hex(from_block)
+        filt['toBlock'] = hex(to_block)
+
+        try:
+            logs = w3.eth.get_logs(filt)
+        except Exception as e:
+            log_v2.error(e)
+            break
+        
+        for log in logs:
+            log_parser(log)
+        
+        last_update = to_block + 1
+        hook(last_update)
+
+
+count = 0
+def data_cache_hook(last_update):
+    global count
+    count += 1
+    if count > 100:
+        users_raw['last_update'] = last_update 
+        json_write_to_file(users_raw, FILE_PATH_RECORD)
+        configs_write_to_file(users_raw['last_update'])
+        count = 0
+    else:
+        users_raw['last_update'] = last_update
+
+    time.sleep(1)
+    return
+
+
 def init():
     w3 = Web3(provider)
-    count = 0
-    block_number = ALIAS['init_block_number'] + 20000  # test only
-    # block_number = w3.eth.get_block_number()
-    print("users sync to latest block number: {}".format(block_number))
+    # block_number = ALIAS['init_block_number'] + 20000  # test only
+    block_number = w3.eth.get_block_number()
     if block_number <= users_raw['last_update']:
         return
+    log_v2.info("users sync to latest block number: {}".format(block_number))
 
     filt = json.loads(COMPOUND_V3_USERS_FILTER_TEMP)
     filt['address'] = get_reserves()
-    print(filt)
+    log_v2.info("event filter: {}".format(filt))
 
+    query_events_loop(filt, log_parser, users_raw['last_update'], block_number, data_cache_hook)
+'''
     while users_raw['last_update'] <= block_number:
         from_block = users_raw['last_update']
-        to_block = from_block + 999
+        to_block = from_block + 1999
         if to_block > block_number:
             to_block = block_number
 
@@ -338,19 +460,27 @@ def init():
             time.sleep(2)
             continue
         
-        if len(logs) != 0:
-            log_parser_wrap(logs)
+        for log in logs:
+            log_parser(log)
         
         users_raw['last_update'] = to_block + 1
 
+        # cache intermediate results
         count += 1
         if count > 100:
-            json_object = json.dumps(users_raw, indent=4)
-            with open(FILE_PATH_RECORD, "w") as outfile:
-                outfile.write(json_object)
+            json_write_to_file(users_raw, FILE_PATH_RECORD)
+            configs_write_to_file(users_raw['last_update'])
             count = 0
 
         time.sleep(1)
+'''
+
+
+def trim_patch():
+    reserves = get_reserves()
+    for user in reserves:
+        if users_raw['users'].get(user, None) is not None:
+            users_raw['users'].pop(user)
 
 
 def trim():
@@ -372,18 +502,15 @@ def trim():
     for user in key1:
         if not users_raw['users'][user]:
             users_raw['users'].pop(user)
-            continue
+    
+    trim_patch()
 
 
 def get_users_start():
     init()
     trim()
-
-    json_object = json.dumps(users_raw, indent=4)
-
-    # Writing to sample.json
-    with open(FILE_PATH_RECORD, "w") as outfile:
-        outfile.write(json_object)
+    json_write_to_file(users_raw, FILE_PATH_RECORD)
+    configs_write_to_file(users_raw['last_update'])
 
 
 def users_filtering(tokens_addr):
@@ -411,7 +538,38 @@ def set_health_factor(user, hf, last_update):
     users_health_factor[user] = [hf, last_update]
 
 
+def empty_hook(input):
+    time.sleep(1)
+    return
+
+
+def query_collateral_factor():
+    filt = {
+        "address": COMPOUND_ALIAS['comet'],
+        "topics": [
+            ["0x70483e6592cd5182d45ac970e05bc62cdcc90e9d8ef2c2dbe686cf383bcd7fc5"]
+        ]
+    }
+    log_v2.info("event filter: {}".format(filt))
+
+    w3 = Web3(provider)
+    block_number = w3.eth.get_block_number()
+    log_v2.info("collateral factor sync to latest block number: {}".format(block_number))
+
+    last_update =  get_collateral_lastupdate()
+    query_events_loop(filt, comet_log_parser, last_update, block_number, empty_hook)
+    collateral_factor_dict = get_collateral_factor_dict()
+    collateral_factor_dict['last_update'] = block_number + 1
+    json_write_to_file(collateral_factor_dict, COMET_CONFIGS_PATH_RECORD)
+
+
 if __name__ == '__main__':
     config_init()
     comet_configs_init()
+    query_reserve_factor()
     get_users_start()
+
+    # query_collateral_factor()
+
+    # config_init()
+    # ctoken_configs_init()
