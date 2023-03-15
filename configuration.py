@@ -5,7 +5,7 @@ from logger import Logger
 from config_utils import json_file_load
 
 # NOTICE: modify the argument to configure network and project
-PROVIDER_TYPE = 'ipc'
+PROVIDER_TYPE = 'ws'
 NETWORK = "Ethereum"
 SELECTOR = 'v3'
 LIQUDATION_LOG_LEVEL = logging.DEBUG
@@ -14,14 +14,14 @@ EVENT_LOG_LEVEL = logging.DEBUG
 ADDRESS_ZERO = "0x0000000000000000000000000000000000000000"
 CONNECTION = {
     'Ethereum': {
-        'ipc': "/data/eth/ethereum/geth.ipc",
+        'ipc': "/data/eth/mev/ethereum/geth.ipc",
         # 'http': "https://eth-mainnet.g.alchemy.com/v2/-rVE6Yp-pyFoYbe7wzM70zDUvN_Vlwkb",
         'http': "https://eth-mainnet.g.alchemy.com/v2/1vSGEJ78c6cVpaXsQxP3fA6D0mKVBGMs",
         # 'http': "https://eth-mainnet.g.alchemy.com/v2/hAtPgPTh1OhcpfjZq9mWz08ib4Zf_lOM",
         # 'ws': "wss://eth-mainnet.g.alchemy.com/v2/1vSGEJ78c6cVpaXsQxP3fA6D0mKVBGMs",
-        'ws': "ws://176.9.111.84:58546",
+        'ws': "ws://3.115.81.7:8546",
         'light': {
-            'url': "ws://localhost:51301",
+            'url': "ws://localhost:51301",  # "ws://18.198.151.1:51315",
             'auth': "085da4b6a041efcef1ef681e5c9c"
         },
         "contract": "0x"
@@ -36,13 +36,14 @@ CONNECTION = {
         }
     },
     'BSC': {
-        'ipc': "",
-        'http': "",
-        'ws': "",
+        'ipc': "/data/bsc/2/geth/geth.ipc",
+        'http': "https://skilled-twilight-lambo.bsc.discover.quiknode.pro/6954660fddce3df1513d923a32e91364dcb95659/",
+        'ws': "wss://skilled-twilight-lambo.bsc.discover.quiknode.pro/6954660fddce3df1513d923a32e91364dcb95659/",
         'light': {
             'url': "ws://localhost:51301",
             'auth': "085da4b6a041efcef1ef681e5c9c"
-        }
+        },
+        "contract": "0x"
     }
 }
 
@@ -71,7 +72,21 @@ COMPOUND = {
     'Polygon': {
     },
     'BSC': {
-        'venus': {}
+        'venus': {
+            'init_block_number': 2471511,
+            'comet': "0xfD36E2c2a6789Db23113685031d7F16329158384",
+            'price_oracle': "0x7FabdD617200C9CB4dcf3dd2C41273e60552068A",
+            'base_currency': "USD",
+            'signals': ['aggregator'],
+            'log_file': {
+                'liq': ['liquidation_bsc_compound_venus.log', 'liq_bsc_com_venus'],
+                'event': ['events_bsc_compound_venus.log', 'eve_bsc_com_venus'],
+            },
+            'ctoken_congis_file': "./users/ctoken_configs_bsc_compound_venus.json",
+            'comet_configs_file': "./users/comet_configs_bsc_compound_venus.json",
+            'users_file': "./users/users_bsc_compound_venus.json",
+            'users_file_status': 0  # 1 for continue; 0 for init from template
+        }
     }
 }
 COMPOUND_ALIAS = COMPOUND[NETWORK][SELECTOR]

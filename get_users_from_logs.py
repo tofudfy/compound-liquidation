@@ -1,6 +1,7 @@
 import json
 import time
 
+from typing import DICT
 from tronpy.abi import trx_abi
 from web3 import Web3
 
@@ -16,6 +17,9 @@ from get_configs_from_comet import (
     get_collateral_lastupdate, get_collateral_factor_dict
 )
 
+TEMPLATE = "./users/users_template.json"
+FILE_PATH_RECORD = COMPOUND_ALIAS['users_file']
+CONFIGS_PATH_RECORD = COMPOUND_ALIAS['ctoken_congis_file']
 COMPOUND_V3_USERS_FILTER_TEMP = """
 {
     "address": "",
@@ -28,8 +32,7 @@ COMPOUND_V3_USERS_FILTER_TEMP = """
             "0x4dec04e750ca11537cabcd8a9eab06494de08da3735bc8871cd41250e190bc04",
             "0xa91e67c5ea634cd43a12c5a482724b03de01e85ca68702a53d0c2f45cb7c1dc5",
             "0x3bad0c59cf2f06e7314077049f48a93578cd16f5ef92329f1dab1420a99c177e"
-        ],
-        []
+        ]
     ]
 }
 """
@@ -124,113 +127,316 @@ EVENT_ABI = {
     },
 }
 
-'''
-{
-    user {
-        reserve: [ is_collateral, collateral_amount, borrow_amount ]
-        ...
-    }
-}
-'''
-TEMPLATE = "./users/users_template.json"
-if COMPOUND_ALIAS['users_file_status'] == 1:
-    FILE_PATH_START = COMPOUND_ALIAS['users_file']
-else:
-    FILE_PATH_START = TEMPLATE
-FILE_PATH_RECORD = COMPOUND_ALIAS['users_file']
 
-users_raw = json_file_load(FILE_PATH_START)
-if FILE_PATH_START == TEMPLATE:
-    users_raw['last_update'] = COMPOUND_ALIAS['init_block_number']
-
-CONFIGS_PATH_RECORD = COMPOUND_ALIAS['ctoken_congis_file']
-ctoken_configs = json_file_load(CONFIGS_PATH_RECORD)
-borrow_index_dict = ctoken_configs['borrowIndex']
-total_reserve_dict = ctoken_configs['totalReserves']
-total_borrow_dict = ctoken_configs['totalBorrows']
-total_supply_dict = ctoken_configs['totalSupply']
-
-users_health_factor = {}
-reserve_factor = {}
+class Aave_reserve(object):
+    def __init__(self, is_collateral: bool, atoken_amount: int, stoken_amount: int, vtoken_amount: int, interest_index: int, interest_update: int):
+        # self.addr = token_addr
+        self.is_collateral = is_collateral
+        self.atoken_amount = atoken_amount 
+        self.stoken_amount = stoken_amount
+        self.vtoken_amount = vtoken_amount
+        self.interest_index = interest_index 
+        self.interest_update = interest_update
 
 
-def ctoken_configs_init():
-    w3 = Web3(provider)
-    block_num = w3.eth.get_block_number()
+class Comp_reserve(object):
+    """
+    reserve: [ is_collateral, collateral_amount, borrow_amount ]
+    """
+    def __init__(self, col_amount: int, debt_amount: int, debt_interest: int):
+        # self.addr = token_addr
+        self.is_collateral = col_amount
+        self.atoken_amount = debt_amount
+        self.stoken_amount = debt_interest
 
-    reserves = get_reserves()
-    for token_addr in reserves:
-        token_contract = w3.eth.contract(address=token_addr, abi=cerc20_interface['abi'])
-        borrow_index_dict[token_addr] = token_contract.functions.borrowIndex().call()
-        total_reserve_dict[token_addr] = token_contract.functions.totalReserves().call()
-        total_borrow_dict[token_addr] = token_contract.functions.totalBorrows().call()
-        total_supply_dict[token_addr] = token_contract.functions.totalSupply().call()
+class Health_factor(object):
+    def __init__(self, health_factor: int, last_update: int):
+        self.health_factor = health_factor
+        self.last_update = last_update
+ 
 
-    log_v2.debug("block: {}, ctoken configs init: {{\"borrowIndex\": {}, \"totalBorrows\": {}, \"totalReserves\": {}, \"totalSupply\": {}}}".
-                format(block_num, borrow_index_dict, total_borrow_dict, total_reserve_dict, total_supply_dict))
+class Users_states():
+    def __init__(self, reserves, hf_infos):
+        self.reserves = reserves_load(reserves)
+        self.health_factor = Health_factor(hf_infos[0], )
+    
+    def reserves_load(reserves):
+        results = {}
+        for reserve, data in reserves.items():
+           results[reserve] = Comp_reserve(data[0], date[1], data[2])
 
+        return results
 
-def query_reserve_factor():
-    w3 = Web3(provider)
-    reserves = get_reserves()
-    for token_addr in reserves:
-        token_contract = w3.eth.contract(address=token_addr, abi=cerc20_interface['abi'])
-        reserve_factor[token_addr] = token_contract.functions.reserveFactorMantissa().call()
+    def get_health_factor(self):
+        return self.health_factor
 
-
-def ctoken_configs_init_v2():
-    ctoken_configs = json_file_load(CONFIGS_PATH_RECORD)
-    borrow_index_dict = ctoken_configs['borrowIndex']
-    total_reserve_dict = ctoken_configs['totalReserves']
-    total_borrow_dict = ctoken_configs['totalBorrows']
-    total_supply_dict = ctoken_configs['totalSupply']
-    query_reserve_factor()
-
-    log_v2.debug("ctoken configs init: {{\"borrowIndex\": {}, \"totalBorrows\": {}, \"totalReserves\": {}, \"totalSupply\": {}}}".
-                format(borrow_index_dict, total_borrow_dict, total_reserve_dict, total_supply_dict))
-
-
-def get_borrow_index(reserve):
-    return borrow_index_dict[reserve]
+    def update_health_factor(self, hf, last_update):
+        self.health_factor = Health_factor(hf, last_update) 
 
 
-def get_total_reserve(reserve):
-    return total_reserve_dict[reserve]
+class Users_states():
+    def __init__(self, users_states_json, last_update, reserves):
+        self.users_states = users_load(users_states_json)
+        self.last_update = last_update
+        self.all_ctokens = reserves 
+
+    def users_load(users_states):
+        results = {}
+        for user, reserves in users_states.items():
+            results[user] = Reserves_states(reserves)
+
+        return results
+
+    def __to_json(self):
+        pass
+
+    def cache(self):
+        users_states_json = __to_json()
+        json_write_to_file(users_states_json, FILE_PATH_RECORD)
+
+    def update(self, log, ctoken_configs):
+        if log.get('removed', False):
+            # log_v2.info("log is removed {}".format(log))
+            return
+
+        topic = log['topics'][0].hex()
+        obj = EVENT_ABI.get(topic, None)
+        if obj is None:
+            # log_v2.error("unexpected topics in get users: {}".format(log))
+            return
+
+        try:
+            data = bytes.fromhex(log['data'][2:])
+            args_data = trx_abi.decode(obj['data'], data)  # todo: optimization
+        except Exception as e:
+            # log_v2.error(e)
+            return
+
+        reserve = log['address']
+        reserve = Web3.toChecksumAddress(reserve)
+
+        # include: Transfer, Mint, Redeem
+        if obj['name'] == 'Transfer':
+            from_user = log['topics'][1][12:].hex()
+            to_user = log['topics'][2][12:].hex()
+            amount = args_data[0]
+
+            check_user_and_reserve(from_user, reserve)
+            check_user_and_reserve(to_user, reserve)
+
+            '''
+            if total_supply_dict.get(reserve, None) is None:
+                total_supply_dict[reserve] = 0
+
+            if from_user == reserve.lower():
+                total_supply_dict[reserve] += amount
+
+            if to_user == reserve.lower():
+                total_supply_dict[reserve] -= amount
+            '''
+
+            users_raw['users'][from_user][reserve][0] -= amount
+            users_raw['users'][to_user][reserve][0] += amount
+
+            log_v2.debug("{} transfer {} amount of reserve {}, current COLLATERAL balance {}".
+                        format(from_user, amount, reserve, users_raw['users'][from_user][reserve][0]))
+            log_v2.debug("{} receive {} amount of reserve {}, current COLLATERAL balance {}".
+                        format(to_user, amount, reserve, users_raw['users'][from_user][reserve][0]))
+            log_v2.debug("reserve {} total supply {}".format(reserve, total_supply_dict[reserve]))
+
+        if obj['name'] == 'RepayBorrow':
+            borrower = '0x' + trx_abi.encode_single("address", args_data[1]).hex()[24:]
+            amount = args_data[3]
+            repay_amount = args_data[2]
+            total_borrow = args_data[4]
+
+            check_user_and_reserve(borrower, reserve)
+            users_raw['users'][borrower][reserve][1] = amount
+            users_raw['users'][borrower][reserve][2] = borrow_index_dict[reserve]
+            # total_borrow_dict[reserve] = total_borrow
+            log_v2.debug("borrower {} {} {} amount of reserve {}, current DEBT balance {}, borrow index {}, total borrow {}".
+                        format(borrower, obj['name'], repay_amount, reserve, amount, borrow_index_dict[reserve], total_borrow_dict[reserve]))
+
+        if obj['name'] == 'Borrow':
+            borrower = '0x' + trx_abi.encode_single("address", args_data[0]).hex()[24:]
+            amount = args_data[2]
+            borrow_amount = args_data[1]
+            total_borrow = args_data[3]
+
+            check_user_and_reserve(borrower, reserve)
+            users_raw['users'][borrower][reserve][1] = amount
+            users_raw['users'][borrower][reserve][2] = borrow_index_dict[reserve]
+            # total_borrow_dict[reserve] = total_borrow
+            log_v2.debug("borrower {} {} {} amount of reserve {}, current DEBT balance {}, borrow index {}, total borrow {}".
+                        format(borrower, obj['name'], borrow_amount, reserve, amount, borrow_index_dict[reserve], total_borrow_dict[reserve]))
+
+        if obj['name'] == 'AccrueInterest' or obj['name'] == 'AccrueInterest_delegate':
+            if obj['name'] == 'AccrueInterest_delegate':
+                deviation = 1
+            else:
+                deviation = 0
+            
+            interest_accumulated = args_data[0+deviation]
+            borrow_index = args_data[1+deviation]
+            total_borrow = args_data[2+deviation]
+
+            borrow_index_dict[reserve] = borrow_index
+            total_borrow_dict[reserve] = total_borrow
+
+            if total_reserve_dict.get(reserve, None) is None:
+                total_reserve_dict[reserve] = 0 
+            total_reserve_dict[reserve] += reserve_factor[reserve] * interest_accumulated // EXP_SCALE
+
+            log_v2.debug("reserve {} update: borrow index {}, total reserves {}, total borrow {}".
+                        format(reserve, borrow_index_dict[reserve], total_reserve_dict[reserve], total_borrow_dict[reserve]))
+
+        if obj['name'] == 'ReservesAdded' or obj['name'] == 'ReservesReduced':
+            new = args_data[2]
+            total_reserve_dict[reserve] = new
+            log_v2.debug("reserve {} update: total reserves {}".format(reserve, total_reserve_dict[reserve]))
+
+        if obj['name'] == 'NewReserveFactor':
+            new = args_data[1]
+            reserve_factor[reserve] = new
+            log_v2.debug("reserve {} update: reserve factor {}".format(reserve, reserve_factor[reserve]))
+
+    def trim(self):
+        key1 = []
+        key2 = []
+
+        # mark empty reserves
+        for user, states in self.users_states.items():
+            key1.append(user)
+            reserves_empty = []
+            reserves = states.reserves
+            for reserve, data in reserves.items():
+                if data.col_amount == 0 and data.debt_amount == 0:
+                    reserves_empty.append(reserve)
+            key2.append(temp)
+
+        # delete empty reserves
+        for i in range(len(key1)):
+            user = key1[i]
+            for reserve in key2[i]:
+                self.users_states[user].pop(reserve)
+
+        # delete empty users
+        for user in key1:
+            if not self.users_states[user]:
+                self.users_states.pop(user)
+    
+    def trim_ctokens(self):
+        for fake_user in self.all_ctokens:
+            if self.users_states.get(fake_user, None) is not None:
+                self.users_states.pop(fake_user)
+        
+
+class Ctoken_configs():
+    def __init__(self, borrow_index, reserve_factor, last_update):
+        self.borrow_index = borrow_index
+        self.reserve_factor = reserve_factor
+    
+    # API: exchangeRateStored
+    # API: getCash
+    def get_exchange_rate(reserve):
+        reserve = Web3.toChecksumAddress(reserve)
+
+        total_supply = get_total_supply(reserve)
+        total_borrow = get_total_borrow(reserve)
+        total_reserve = get_total_reserve(reserve)
+        total_cash = 0  # todo getCash()
+
+        if total_supply == 0:
+            return 200000000000000000000000000  # initialExchangeRateMantissa: setted manually
+        else:
+            temp = total_cash + total_borrow - total_reserve
+            return temp * EXP_SCALE // total_supply
 
 
-def get_total_borrow(reserve):
-    return total_borrow_dict[reserve]
+class Ctoken_balances():
+    def __init__(self, total_reserve, total_borrow, total_supply, last_update):
+        
+        self.total_reserve = ctoken_configs['totalReserves']
+        self.total_borrow = ctoken_configs['totalBorrows']
+        self.total_supply = ctoken_configs['totalSupply']
+    
+    def __to_json(self):
+        pass
 
 
-def get_total_supply(reserve):
-    return total_supply_dict[reserve]
+class Ctoken_infos():
+    def __init__(self, configs: Ctoken_configs, balances: Ctoken_balances):
+        self.configs = configs 
+        self.balances = balances 
+
+    def cache():
+        ctoken_balances
+        json_write_to_file(ctoken_configs, CONFIGS_PATH_RECORD)
 
 
-def get_exchange_rate(reserve):
-    reserve = Web3.toChecksumAddress(reserve)
+def reload_ctokens_configs():
+    ctokens_configs = json_file_load(CONFIGS_PATH_RECORD)
 
-    total_supply = get_total_supply(reserve)
-    total_borrow = get_total_borrow(reserve)
-    total_reserve = get_total_reserve(reserve)
-    total_cash = 0  # todo
+    ctokens_infos = {}
+    for ctoken, configs in ctokens_configs.items():
+        total_reserve = ctoken_configs['totalReserves']
+        total_borrow = ctoken_configs['totalBorrows']
+        total_supply = ctoken_configs['totalSupply']
+        last_update = ctoken_configs['lastUpdated']
+        ctokens_infos[ctoken] = Ctoken_balances(total_reserve, total_borrow, total_supply, last_update)
 
-    if total_supply == 0:
-        return 0  # todo: initialExchangeRateMantissa
+    return ctokens_infos 
+
+
+def query_reserve_factor(w3, ctoken_addr):
+    ctoken_contract = w3.eth.contract(address=ctoken_addr, abi=cerc20_interface['abi'])
+    return ctoken_contract.functions.reserveFactorMantissa().call()
+
+
+def query_borrow_index(w3, ctoken_addr) 
+    ctoken_contract = w3.eth.contract(address=ctoken_addr, abi=cerc20_interface['abi'])
+    return ctoken_contract.functions.borrowIndex().call()
+
+
+def query_ctokens_configs(w3, reserves):
+    ctokens_infos = {}
+    for ctoken_addr in reserves:
+        ctoken_contract = w3.eth.contract(address=ctoken_addr, abi=cerc20_interface['abi'])
+        borrow_index = ctoken_contract.functions.borrowIndex().call()
+        reserve_factor = ctoken_contract.functions.reserveFactorMantissa().call()
+ 
+        # total_reserve = token_contract.functions.totalReserves().call()
+        # total_borrow = token_contract.functions.totalBorrows().call()
+        # total_supply = token_contract.functions.totalSupply().call()
+        
+        ctokens_infos[token_addr] = Ctoken_configs(borrow_index, reserve_factor)
+    
+    return ctokens_infos
+
+
+def init_ctokens_configs(w3, reserves):
+    ctokens_infos = query_ctokens_configs(w3, reserves)
+    ctokens_infos.update(reload_ctokens_configs())
+
+
+def reload_users_states():
+    if COMPOUND_ALIAS['users_file_status'] == 1:
+        file_path_start = COMPOUND_ALIAS['users_file']
     else:
-        temp = total_cash + total_borrow - total_reserve
-        return temp * EXP_SCALE // total_supply
+        file_path_start = TEMPLATE
+
+    users_raw = json_file_load(file_path_start)
+    if TEMPLATE == file_path_start:
+        last_update = COMPOUND_ALIAS['init_block_number']
+    else:
+        last_update = users_raw['last_update']
+
+    return Users_states(users_raw['users'], last_update) 
 
 
 def users_filter_converter_light():
     filt = json.loads(COMPOUND_V3_USERS_FILTER_TEMP)
-    array = []
-
-    for key, value in filt.items():
-        if key == "topics":
-            for topic in value[0]:
-                array.append([topic])
-
-    return array
+    return filt['topics']
 
 
 def check_user_and_reserve(user, reserve):
@@ -245,131 +451,16 @@ def log_parser_wrap(logs):
     num_list = []
     for log in logs:
         log_parser(log)
-        if len(num_list) == 0:
+        if len(num_list) == 0 or log['blockNumber'] != num_list[-1]:
             num_list.append(log['blockNumber'])
 
-        if log['blockNumber'] != num_list[-1]:
-            num_list.append(log['blockNumber'])
-
-    if len(num_list) == 0:
-        return
+    if len(num_list) != 0:
+        log_v2.info("users updated: from block {} to {}".format(num_list[0], num_list[-1]))
 
     trim_patch()
-    # users_raw['last_update'] = num_list[-1] + 1
-    # json_write_to_file(users_raw, FILE_PATH_RECORD)
-    # configs_write_to_file(users_raw['last_update'])
-
-    log_v2.info("users updated: from block {} to {}".format(num_list[0], num_list[-1]))
-
-
-def log_parser(log):
-    if log['removed']:
-        log_v2.info("log is removed {}".format(log))
-        return
-
-    topic = log['topics'][0].hex()
-    obj = EVENT_ABI.get(topic, None)
-    if obj is None:
-        log_v2.error("unexpected topics in get users: {}".format(log))
-        return
-
-    try:
-        data = bytes.fromhex(log['data'][2:])
-        args_data = trx_abi.decode(obj['data'], data)
-    except Exception as e:
-        log_v2.error(e)
-        return
-
-    reserve = log['address']
-    reserve = Web3.toChecksumAddress(reserve)
-
-    # include: Transfer, Mint, Redeem
-    if obj['name'] == 'Transfer':
-        from_user = log['topics'][1][12:].hex()
-        to_user = log['topics'][2][12:].hex()
-        amount = args_data[0]
-
-        check_user_and_reserve(from_user, reserve)
-        check_user_and_reserve(to_user, reserve)
-
-        if total_supply_dict.get(reserve, None) is None:
-            total_supply_dict[reserve] = 0
-
-        if from_user == reserve.lower():
-            total_supply_dict[reserve] += amount
-
-        if to_user == reserve.lower():
-            total_supply_dict[reserve] -= amount
-
-        users_raw['users'][from_user][reserve][0] -= amount
-        users_raw['users'][to_user][reserve][0] += amount
-
-        log_v2.debug("{} transfer {} amount of reserve {}, current COLLATERAL balance {}".
-                     format(from_user, amount, reserve, users_raw['users'][from_user][reserve][0]))
-        log_v2.debug("{} receive {} amount of reserve {}, current COLLATERAL balance {}".
-                     format(to_user, amount, reserve, users_raw['users'][from_user][reserve][0]))
-        log_v2.debug("reserve {} total supply {}".format(reserve, total_supply_dict[reserve]))
-
-    if obj['name'] == 'RepayBorrow':
-        borrower = '0x' + trx_abi.encode_single("address", args_data[1]).hex()[24:]
-        amount = args_data[3]
-        repay_amount = args_data[2]
-        total_borrow = args_data[4]
-
-        check_user_and_reserve(borrower, reserve)
-        users_raw['users'][borrower][reserve][1] = amount
-        users_raw['users'][borrower][reserve][2] = borrow_index_dict[reserve]
-        total_borrow_dict[reserve] = total_borrow
-        log_v2.debug("borrower {} {} {} amount of reserve {}, current DEBT balance {}, borrow index {}, total borrow {}".
-                     format(borrower, obj['name'], repay_amount, reserve, amount, borrow_index_dict[reserve], total_borrow_dict[reserve]))
-
-    if obj['name'] == 'Borrow':
-        borrower = '0x' + trx_abi.encode_single("address", args_data[0]).hex()[24:]
-        amount = args_data[2]
-        borrow_amount = args_data[1]
-        total_borrow = args_data[3]
-
-        check_user_and_reserve(borrower, reserve)
-        users_raw['users'][borrower][reserve][1] = amount
-        users_raw['users'][borrower][reserve][2] = borrow_index_dict[reserve]
-        total_borrow_dict[reserve] = total_borrow
-        log_v2.debug("borrower {} {} {} amount of reserve {}, current DEBT balance {}, borrow index {}, total borrow {}".
-                     format(borrower, obj['name'], borrow_amount, reserve, amount, borrow_index_dict[reserve], total_borrow_dict[reserve]))
-
-    if obj['name'] == 'AccrueInterest' or obj['name'] == 'AccrueInterest_delegate':
-        if obj['name'] == 'AccrueInterest_delegate':
-            deviation = 1
-        else:
-            deviation = 0
-        
-        interest_accumulated = args_data[0+deviation]
-        borrow_index = args_data[1+deviation]
-        total_borrow = args_data[2+deviation]
-
-        borrow_index_dict[reserve] = borrow_index
-        total_borrow_dict[reserve] = total_borrow
-
-        if total_reserve_dict.get(reserve, None) is None:
-            total_reserve_dict[reserve] = 0 
-        total_reserve_dict[reserve] += reserve_factor[reserve] * interest_accumulated // EXP_SCALE
-
-        log_v2.debug("reserve {} update: borrow index {}, total reserves {}, total borrow {}".
-                     format(reserve, borrow_index_dict[reserve], total_reserve_dict[reserve], total_borrow_dict[reserve]))
-
-    if obj['name'] == 'ReservesAdded' or obj['name'] == 'ReservesReduced':
-        new = args_data[2]
-        total_reserve_dict[reserve] = new
-        log_v2.debug("reserve {} update: total reserves {}".format(reserve, total_reserve_dict[reserve]))
-
-    if obj['name'] == 'NewReserveFactor':
-        new = args_data[1]
-        reserve_factor[reserve] = new
-        log_v2.debug("reserve {} update: reserve factor {}".format(reserve, reserve_factor[reserve]))
- 
-
-# currently unused
-def update_timestamp(time_stamp):
-    users_raw['last_update'] = time_stamp
+    users_raw['last_update'] = num_list[-1] + 1
+    json_write_to_file(users_raw, FILE_PATH_RECORD)
+    configs_write_to_file(users_raw['last_update'])
 
 
 def json_write_to_file(data, file_path):
@@ -378,20 +469,8 @@ def json_write_to_file(data, file_path):
         outfile.write(json_object) 
 
 
-def configs_write_to_file(last_updated):
-    ctoken_configs = {
-        "borrowIndex": borrow_index_dict,
-        "totalBorrows": total_borrow_dict,
-        "totalReserves": total_reserve_dict,
-        "totalSupply": total_supply_dict,
-        "lastUpdated": last_updated
-    }
-    json_write_to_file(ctoken_configs, CONFIGS_PATH_RECORD)
-
-
-def query_events_loop(filt, log_parser, last_update, target, hook):
-    w3 = Web3(provider)
-
+def query_events_loop(w3, filt, target_block, users_states, hook):
+    counter = 0
     while last_update <= target:
         from_block = last_update
         to_block = from_block + 1999
@@ -408,24 +487,24 @@ def query_events_loop(filt, log_parser, last_update, target, hook):
             break
         
         for log in logs:
-            log_parser(log)
+            users_states.update(log)
         
         last_update = to_block + 1
-        hook(last_update)
+        counter += 1
+        counter = hook(last_update, counter)
 
 
-count = 0
-def data_cache_hook(last_update):
-    global count
-    count += 1
+def data_cache_hook(users_states, count):
     if count > 100:
-        users_raw['last_update'] = last_update 
-        json_write_to_file(users_raw, FILE_PATH_RECORD)
-        configs_write_to_file(users_raw['last_update'])
+        users_states.cache()
+        ctokens_configs.cache()
         count = 0
-    else:
-        users_raw['last_update'] = last_update
 
+    time.sleep(1)
+    return count
+
+
+def empty_hook(input):
     time.sleep(1)
     return
 
@@ -433,7 +512,7 @@ def data_cache_hook(last_update):
 def init():
     w3 = Web3(provider)
     # block_number = ALIAS['init_block_number'] + 20000  # test only
-    block_number = w3.eth.get_block_number()
+    block_number = 16176860 # w3.eth.get_block_number()
     if block_number <= users_raw['last_update']:
         return
     log_v2.info("users sync to latest block number: {}".format(block_number))
@@ -443,67 +522,6 @@ def init():
     log_v2.info("event filter: {}".format(filt))
 
     query_events_loop(filt, log_parser, users_raw['last_update'], block_number, data_cache_hook)
-'''
-    while users_raw['last_update'] <= block_number:
-        from_block = users_raw['last_update']
-        to_block = from_block + 1999
-        if to_block > block_number:
-            to_block = block_number
-
-        filt['fromBlock'] = hex(from_block)
-        filt['toBlock'] = hex(to_block)
-
-        try:
-            logs = w3.eth.get_logs(filt)
-        except Exception as e:
-            log_v2.error(e)
-            time.sleep(2)
-            continue
-        
-        for log in logs:
-            log_parser(log)
-        
-        users_raw['last_update'] = to_block + 1
-
-        # cache intermediate results
-        count += 1
-        if count > 100:
-            json_write_to_file(users_raw, FILE_PATH_RECORD)
-            configs_write_to_file(users_raw['last_update'])
-            count = 0
-
-        time.sleep(1)
-'''
-
-
-def trim_patch():
-    reserves = get_reserves()
-    for user in reserves:
-        if users_raw['users'].get(user, None) is not None:
-            users_raw['users'].pop(user)
-
-
-def trim():
-    key1 = []
-    key2 = []
-
-    for user, reserves in users_raw['users'].items():
-        key1.append(user)
-        temp = []
-        for reserve, data in reserves.items():
-            if data[0] == 0 and data[1] == 0:
-                temp.append(reserve)
-        key2.append(temp)
-
-    for i in range(len(key1)):
-        for reserve in key2[i]:
-            users_raw['users'][key1[i]].pop(reserve)
-
-    for user in key1:
-        if not users_raw['users'][user]:
-            users_raw['users'].pop(user)
-    
-    trim_patch()
 
 
 def get_users_start():
@@ -528,19 +546,6 @@ def users_filtering(tokens_addr):
             res.append((usr, a, reserves, health_factor))
 
     return res
-
-
-def get_health_factor(user):
-    return users_health_factor.get(user, None)
-
-
-def set_health_factor(user, hf, last_update):
-    users_health_factor[user] = [hf, last_update]
-
-
-def empty_hook(input):
-    time.sleep(1)
-    return
 
 
 def query_collateral_factor():
