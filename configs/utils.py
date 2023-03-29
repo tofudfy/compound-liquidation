@@ -1,4 +1,7 @@
 import json
+import os
+import time
+from web3 import Web3
 
 
 def json_file_load(file_path):
@@ -8,9 +11,9 @@ def json_file_load(file_path):
     return js
 
 
-def json_write_to_file(data, file_path):
+def json_write_to_file(data, abs_path, file_path):
     json_object = json.dumps(data, indent=4)
-    with open(file_path, "w") as outfile:
+    with open(abs_path + os.sep + file_path, "w") as outfile:
         outfile.write(json_object)
 
 
@@ -23,10 +26,11 @@ def data_cache_hook(obj, count: int):
 
 
 def empty_hook(obj, count):
-    pass
+    time.sleep(1)
+    return 0
 
 
-def query_events_loop(w3, obj, filt, target_block, hook):
+def query_events_loop(w3: Web3, obj, filt, target_block, hook=empty_hook):
     counter = 0
     while obj.last_update < target_block:
         from_block = obj.last_update + 1
@@ -40,6 +44,8 @@ def query_events_loop(w3, obj, filt, target_block, hook):
         try:
             logs = w3.eth.get_logs(filt)
         except Exception as e:
+            # raise Exception(f"get logs failed, error: {e}")
+            print(f"get logs failed at {from_block}, error: {e}")
             break
 
         for log in logs:
@@ -48,5 +54,3 @@ def query_events_loop(w3, obj, filt, target_block, hook):
 
         counter += 1
         counter = hook(obj, counter)
-
-

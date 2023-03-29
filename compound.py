@@ -1,69 +1,36 @@
 import asyncio
 import time
 import os
-import json
 import timeit
 import threading
 import queue
-import numpy as np
 import multiprocessing
 import traceback
 
 from logger import Logger
 from web3 import Web3
-from websockets import connect
 from tronpy.abi import trx_abi
 from multiprocessing import cpu_count
 from errors import MyError
 from typing import Dict, List
 
+from utils import WSconnect, polling_full, subscribe_to_node, subscribe_tx_light, subscribe_event_light
 from types_liq import LogReceiptLight, converter
 from configs.config import CONNECTION, NETWORK, P_ALIAS, LIQUDATION_LOG_LEVEL, EXP_SCALE, ADDRESS_ZERO
 from configs.web3_liq import Web3Liquidation
-from configs.users import UserStates, gen_states_filter, reload_states, sync_states
+from configs.users import States, HighProfitSates, HealthFactor, gen_states_filter, reload_states, sync_states
 from configs.comet import CometConfigs, gen_comet_filter, init_comet_configs
-from configs.tokens import CompReserve, CtokenInfos,  complete_ctokens_configs_info, complete_ctokens_price_info, complete_ctokens_risks, query_exchange_rate
-from configs.signals import Signals, init_signals
-from configs.block import BlockInfos, init_block_infos
-
-TRANSMIT_FUNC_SIG = bytes.fromhex('c9807539')
-TRANSMIT_ARG_TYPES1 = ['bytes', 'bytes32[]', 'bytes32[]', 'bytes32']
-TRANSMIT_ARG_TYPES2 = ['bytes32', 'bytes32', 'int192[]']
+from configs.tokens import CompReserve, CtokenInfos,  complete_ctokens_configs_info, complete_ctokens_risks, query_exchange_rate
+from configs.signals import init_signals, gen_signals_filter, complete_ctokens_price_info, price_scale
+from configs.block import init_block_infos
 
 DESIRED_PROFIT = 1 * 10**18  # in USD
 HF_THRESHOLD = 1
 
 
-async def get_chain_infos_full():
-    counter = 0
-    json_rpc_str = '{"id": 1, "jsonrpc": "2.0", "method": "eth_subscribe", "params": ["newHeads"]}'
-    while True:
-        counter += 1
-        async with connect(CONNECTION[NETWORK]['ws']) as ws:
-            json_rpc_str.replace("1,", str(counter) + ",")
-            await ws.send(json_rpc_str)
-            subscription_response = await ws.recv()
-            logger.info(subscription_response)
-
-            while True:
-                try:
-                    message = await asyncio.wait_for(ws.recv(), timeout=60)
-                    on_message(message)
-                except Exception as e:
-                    logger.error(f"get chain infos error: {e}")
-                    break
-
-        if counter >= 5:
-            raise Exception("subscribe new headers to full nodes too many times")
-        else:
-            logger.info("try to re-subscribe to full node")
-
-
-def on_message(message):
-    data = json.loads(message)
-
-    if 'params' in data and 'result' in data['params']:
-        result = data['params']['result']
+def on_message(message: Dict):
+    if 'params' in message and 'result' in message['params']:
+        result = message['params']['result']
 
         if 'number' in result:
             block_number = int(result['number'], 16)
@@ -71,110 +38,103 @@ def on_message(message):
             base_fee = int(result['baseFeePerGas'], 16)
             gas_price = w3_liq.w3.eth.gas_price
 
-            # Update the local block number, timestamp, and base fee
+            # task 1: Update the local block number, timestamp, and base fee
             block_infos.update(block_number, block_timestamp, base_fee, gas_price)
 
-            # Update one of the exchange rate every block
+            # task 2: Update one of the exchange rate every block
             index = block_number % len(reserves_init)
             token_addr = reserves_init[index]
             states.ctokens[token_addr].risks.exchange_rate = query_exchange_rate(w3_liq, token_addr)
+
+            # task 3: timeout the staled price
+            for reserve in reserves_init:
+                states.ctokens[reserve].price.revert()
+
+
+async def get_chain_infos_full():
+    counter = 0
+    json_rpc = {"id": 1, "jsonrpc": "2.0", "method": "eth_subscribe", "params": ["newHeads"]}
+    while True:
+        counter += 1
+        json_rpc['id'] = counter
+        ws = WSconnect(CONNECTION[NETWORK]['ws'])
+
+        subscribe_to_node(ws, json_rpc, on_message)
+
+        if counter >= 5:
+            raise Exception("subscribe new headers to full nodes too many times")
+        else:
+            logger.info("try to re-subscribe to full node")
+
+
+def get_pending_callback(message):
+    txs = message['Txs']
+    for tx in txs:
+        t = tx['Tx']
+        t['from'] = tx['From']
+        pt(t)
 
 
 async def get_pending_transactions_light(callback):
     while True:
         logger.info("try to subscribe to light node")
         try:
-            async with connect(CONNECTION[NETWORK]['light']['url'], ping_interval=None,
-                               extra_headers={'auth': CONNECTION[NETWORK]['light']['auth']}) as ws:
-                await ws.send(
-                    json.dumps({
-                        'm': 'subscribe',
-                        'p': 'txpool',
-                        'tx_filters': signals.signals_event_filter
-                    }))
-                subscription_response = await ws.recv()
-                logger.info(subscription_response.strip())
-
-                while True:
-                    try:
-                        message = await asyncio.wait_for(ws.recv(), timeout=1200)
-                    except Exception as e:
-                        logger.error("error: {}, websocket exception".format(e))
-                        break
-
-                    message = json.loads(message)
-                    txs = message['Txs']
-                    for tx in txs:
-                        t = tx['Tx']
-                        t['from'] = tx['From']
-                        callback(t, tx_filter_and_parsing_wrap)
+            subscribe_tx_light(signals.signals_event_filter_light, callback)
 
         except Exception as e:
             logger.error("{}, unable to subscribe to light node".format(e))
             break
 
 
-def tx_filter_and_parsing_wrap(tx_attribute_dict):
-    tx_filter_and_parsing(signals, block_infos, tx_attribute_dict)
+'''
+async def continues_liquidation(callback):
+    while True:
+        start = timeit.default_timer()
+        logger.debug("continues liquidation in control")
+        try:
+            callback(current_time, block_number)
+            
+            stop = timeit.default_timer()
+            logger.debug(f'continues liquidation out of control: {{"total_time": {stop-start}, "height": {block_number}}}')
+            await asyncio.sleep(0.1)
+
+        except Exception as e:
+            raise Exception(f"error in continues liquidation: {e}")
 
 
-def tx_filter_and_parsing(sig: Signals, blk: BlockInfos, tx_attribute_dict):
-    """
-    parsing the pending transactions in order to
-    1. from 'input' to get the latest price update
-    2. from 'to' to infer the A/ETH token
-    :param blk:
-    :param sig:
-    :param tx_attribute_dict:
-    :return:
-    """
-    sender = tx_attribute_dict['from']
-    contract_addr = tx_attribute_dict['to']
-    input_str = tx_attribute_dict['input']
-    call_data_bin = bytes.fromhex(input_str[2:])
+async def continues_health_factor_calculation(current_time, block_num):
+    # task 1: listen to the users by block, to generate top-of-block
+    results = get_continues_users_queue(current_time)
+    if len(results) != 0:   
+        logger.info(f"continues liquidations start at {block_num} + 1")
+        users = deduplication(results)
+        users_trim = users_trimming_v3(users, 0, current_time, False, True)   
+        await pre_calculate_health_factor(users_trim, current_time, is_all=True)
 
-    if len(call_data_bin) <= 4:
-        raise MyError("call data error")
-
-    method_signature = call_data_bin[:4]
-    if method_signature != TRANSMIT_FUNC_SIG:
-        raise MyError("unknown function signature")
-
-    signal_gasprice = tx_attribute_dict['gasPrice']
-    local_gasprice = blk.gas_price
-    if 0.9*local_gasprice > signal_gasprice:
-        raise MyError(f'signal price too low: {{"local":{local_gasprice}, "signal":{signal_gasprice}}}')
-
-    args = trx_abi.decode(TRANSMIT_ARG_TYPES1, call_data_bin[4:])
-    args = trx_abi.decode(TRANSMIT_ARG_TYPES2, args[0])
-
-    raw_report_ctx = args[0]
-    signal_epoch = int(raw_report_ctx[-5:].hex(), 16)
-    local_epoch = sig.signals_epoch.get(contract_addr, 0)
-    if local_epoch > signal_epoch:
-        raise MyError(f'signal stale report: {{"local":{local_epoch}, "signal":{signal_epoch}}}')
-    else:
-        sig.signals_epoch[contract_addr] = signal_epoch
-
-    a = np.array(args[2])
-    price = a[len(a)//2]
-
-    # logger.debug("parsing result: {} {}".format(contract_addr, price))
-    return no_name(sig, contract_addr, price)
-
-
-def no_name(signals, aggregator, price) -> List:
-    r = []
-    aggr_infos = signals.signal_token_map[aggregator]
-    token_addr = aggr_infos.token
-    pair_symbols = aggr_infos.pair_symbols
-    # logger.debug("the matched info of aggregator {} is {}".format(aggregator, aggr_infos))
-
-    if pair_symbols[1] == P_ALIAS['base_currency']:
-        r.append((token_addr, price))
-    else:
-        raise MyError("unrecognize aggregators")
-    return r
+    # task 2: finish the hf calculation of the remaining users
+    users_trim = get_pending_users_queue()
+    if len(users_trim) != 0:
+        logger.info(f"continues pending users start at {block_num} + 1")   
+        await pre_calculate_health_factor(users_trim, current_time, is_signal=signal_infos.get('hash', ''))
+        return
+    
+    # task3: update infos periodically
+    now = time.time() % INTVL  #
+    num = 180 // INTVL  # trigger every 3 mins
+    index = block_num//num
+    if block_num%num == 1 and now <= 0.12:
+        logger.info(f"continues random sample start at {block_num} + 1, index {index}")
+        # users = get_user_random_samples(SAMPLING_LIMIT)
+        users = get_user_spesific_samples(SAMPLING_LIMIT, index)
+        users_trim = users_trimming_v3(users, 0, current_time, False, False)
+        await pre_calculate_health_factor(users_trim, current_time)
+    elif block_num%num == 3 and now <= 0.12:
+        token_addr = get_reserves_key_by_index(index)
+        logger.info(f"continues pre users filtering, index {index}, token {token_addr}")
+        users = users_filtering_v2([token_addr])
+        users_trim = users_trimming_v3(users, 0, current_time+1200, True, False) 
+        set_users_prefiltered(token_addr, users_trim)
+'''
 
 
 def users_subscribe_callback(response: LogReceiptLight):
@@ -195,6 +155,7 @@ def users_subscribe_callback(response: LogReceiptLight):
     for log in logs:
         states.update(log)
     states.last_update = block_num
+    states.block_hash = block_hash
     logger.info(f'users in local cache updated: {{"block_num": {block_num}}}')
 
 
@@ -213,79 +174,33 @@ def comet_subscribe_callback(response: LogReceiptLight):
     logger.info(f'comet in local cache updated: {{"block_num": {block_num}}}')
 
 
-async def subscribe_light(filt, callback):
-    async with connect(CONNECTION[NETWORK]['light']['url'], ping_interval=None,
-                       extra_headers={'auth': CONNECTION[NETWORK]['light']['auth']}) as ws:
-        await ws.send(
-            json.dumps({
-                'm': 'subscribe',
-                'p': 'receipts',
-                'event_filter': filt
-            }))
-
-        subscription_response = await ws.recv()
-        logger.info(subscription_response)
-
-        while True:
-            try:
-                response = await asyncio.wait_for(ws.recv(), timeout=None)
-                start = timeit.default_timer()
-                logger.debug("user balance listening in control")
-            except Exception as e:
-                logger.error(f"unable to connect to get receipts of users: {e}")
-                break
-
-            response = json.loads(response)
-            callback(response)
-            stop = timeit.default_timer()
-            logger.debug(f'user balance listening out of control:{{"total_time":{stop-start}}}')
+def signals_subscribe_callback(response: LogReceiptLight):
+    logs = converter(response)
+    for log in logs:
+        contract_addr = log['address']
+        aggr_infos = signals.signal_token_map[contract_addr]
+        ctoken_addr = aggr_infos.token
+        decimals = states.ctokens[ctoken_addr].configs.decimals
+        states.ctokens[ctoken_addr].price.comfirm(log, decimals)
 
 
 async def users_polling_full(callback):
     filt = gen_states_filter(reserves_init)
     logger.debug("the user filter is {}".format(filt))
-
-    while True:
-        w3 = w3_liq.w3
-        event_filter = w3.eth.filter(filt)
-        while True:
-            try:
-                events = event_filter.get_new_entries()
-            except Exception as e:
-                await asyncio.sleep(12)
-                logger.error("In users: {}".format(e))
-                break
-
-            if len(events) != 0:
-                callback(events)
-            await asyncio.sleep(6)
+    polling_full(w3_liq, filt, callback)
 
 
 async def comet_configs_polling_full(callback):
     filt = gen_comet_filter()
     logger.debug("the comet configs filter is {}".format(filt))
-
-    while True:
-        event_filter = w3_liq.w3.eth.filter(filt)
-        while True:
-            try:
-                events = event_filter.get_new_entries()
-            except Exception as e:
-                await asyncio.sleep(12)
-                logger.error("In users: {}".format(e))
-                break
-
-            # logger.debug("users events received")
-            if len(events) != 0:
-                callback(events)
-            await asyncio.sleep(6)
+    polling_full(w3_liq, filt, callback)
 
 
-def calculate_health_factor_wrap(usr):
+def calculate_health_factor_wrap(usr) -> (str, HealthFactor):
     return calculate_health_factor(usr, states.users_states[usr].reserves, states.ctokens, comet)
 
 
-def calculate_health_factor(usr: str, reserves: Dict[str, CompReserve], ctk: Dict[str, CtokenInfos], comet: CometConfigs):
+def calculate_health_factor(usr: str, reserves: Dict[str, CompReserve], ctk: Dict[str, CtokenInfos], comet: CometConfigs) -> (str, HealthFactor):
     sum_collateral = 0
     sum_borrow_plus_effects = 0
 
@@ -314,7 +229,7 @@ def calculate_health_factor(usr: str, reserves: Dict[str, CompReserve], ctk: Dic
 
     if sum_borrow_plus_effects <= 0:
         # logger.debug("user {} no borrows".format(usr[0]))
-        return 0
+        return usr, HealthFactor(0, sum_borrow_plus_effects, int(time.time()))
     else:
         health_factor = sum_collateral / sum_borrow_plus_effects
         short_fall = sum_borrow_plus_effects - sum_collateral
@@ -326,12 +241,7 @@ def calculate_health_factor(usr: str, reserves: Dict[str, CompReserve], ctk: Dic
         # logger.debug(f"user {usr} (0, liquidity {liquidity}, shortfall {short_fall}), health factor {health_factor}, sum collateral {sum_collateral}, sum borrow {sum_borrow_plus_effects}")
         print(f"user: {usr} account liquidity: (0, {liquidity}, {short_fall}), health factor: {health_factor}, sum collateral {sum_collateral}, sum borrow {sum_borrow_plus_effects}")
 
-        return health_factor
-
-
-# todo: doTransferIn simulation?
-def do_transfer_in(amount):
-    return amount
+        return usr, HealthFactor(health_factor, sum_borrow_plus_effects, int(time.time()))
 
 
 def mul_scalar_truncate(ratio, repay_amount):
@@ -347,8 +257,6 @@ def liquidation_simulation(reserves: Dict[str, CompReserve], ctokens: Dict[str, 
 
         debt_balance = debt_balance * borrow_index // interest_index
         if debt_balance > 0:
-            # unused
-            # actual_repay_amount = do_transfer_in(debt_balance)
             debt_max = mul_scalar_truncate(com.closs_factor, debt_balance)
             debt_price = ctokens[ctoken_addr].price.price_current
             debt_normalize = debt_price * debt_max // EXP_SCALE
@@ -409,12 +317,10 @@ def liquidation_init(usr_addr: str, reserves: Dict[str, CompReserve], ctokens: D
     return (collaterals[0][1], debt[1], usr_addr, collaterals[0][3], False), onchain_swap_profit_max
 
 
-def signal_simulate_health_factor(results):
+def signal_simulate_health_factor(results: List[(str, HealthFactor)]):
     for res in results:
-        usr = res[0]
-        new_health_factor = res[1]
-
-        if 1 > new_health_factor/HF_THRESHOLD > 0:
+        (usr, new_health_factor) = res
+        if 1 > new_health_factor.value/HF_THRESHOLD > 0:
             liquidation_params, revenue = liquidation_init(usr, states.users_states[usr].reserves, states.ctokens, comet)
 
             if liquidation_params is not None:
@@ -428,11 +334,11 @@ def users_filtering_wrap(tokens_addr):
     return users
 
 
-def write_health_factor(results: List, block_time: int):
+def write_health_factor(results: List[(str, HealthFactor)]):
     logger.debug('write health factor start')
     for res in results:
-        usr = res[0]
-        states.users_states[usr].update_health_factor(res[1], block_time)
+        (usr, new_health_factor) = res
+        states.users_states[usr].health_factor = new_health_factor
 
 
 def calculate_health_factor_fake_inverse(health_factor_after, delta):
@@ -480,11 +386,11 @@ def find_closet_hf_users_index(sorted_users, delta_max):
     return index
 
 
-def start_multi_process_wrap(targets, map_func, args_par):
+def start_multi_process_wrap(targets, map_func, args_par) -> List[(str, HealthFactor)]:
     return start_multi_process(pool, targets, core, map_func, args_par)
 
 
-def start_multi_process(p, targets, target_num, map_func, args_par):
+def start_multi_process(p, targets, target_num, map_func, args_par) -> List[(str, HealthFactor)]:
     invl = len(targets)//target_num
 
     results = []
@@ -502,15 +408,15 @@ def start_multi_process(p, targets, target_num, map_func, args_par):
     return res
 
 
-def start_for_loop(targets):
+def start_for_loop(targets) -> List[(str, HealthFactor)]:
     res = []
     for usr in targets:
-        res.append([usr, calculate_health_factor_wrap(usr), int(time.time())])
+        res.append(calculate_health_factor_wrap(usr))
 
     return res
 
 
-def signal_calculate_health_factor(tim_users):
+def signal_calculate_health_factor(tim_users) -> List[(str, HealthFactor)]:
     stop1 = timeit.default_timer()
     if len(tim_users) > 2000:
         args = ()
@@ -523,13 +429,20 @@ def signal_calculate_health_factor(tim_users):
     return results
 
 
-def pt(message, f):
+def complete_states_info(states: States):
+    users = list(states.users_states.keys())
+    results = signal_calculate_health_factor(users)
+    write_health_factor(results)
+
+
+def pt(message):
     sta = timeit.default_timer()
     logger.debug(f'new message received: {{"hash":"{message["hash"]}"}}')
 
     # signal verify and parsing
     try:
-        res = f(message)
+        # different signal may use different parser
+        res = signals.tx_filter_and_parsing(message, block_infos.gas_price)
         logger.info("tx {}: has {} new prices update: {}".format(message['hash'], len(res), res))
     except Exception as e:
         logger.error(e)
@@ -541,7 +454,7 @@ def pt(message, f):
     for r in res:
         token_addr = Web3.toChecksumAddress(r[0])
         price = r[1]
-        new_price = states.ctokens[token_addr].price_scale(price)
+        new_price = price_scale(price, states.ctokens[token_addr].configs.decimals)
 
         old_price = states.ctokens[token_addr].price.price_current
         new_delta = new_price / old_price - 1
@@ -561,17 +474,17 @@ def pt(message, f):
     results = signal_calculate_health_factor(sorted_users)
     signal_simulate_health_factor(results)
 
-    block_time = block_infos.block_time
-    write_health_factor(results, block_time)
+    write_health_factor(results)
     stop = timeit.default_timer()
 
 
 async def main():
     tasks = [
-        asyncio.create_task(subscribe_light(gen_states_filter(reserves_init), users_subscribe_callback)),
-        asyncio.create_task(subscribe_light(gen_comet_filter(), comet_subscribe_callback)),
+        asyncio.create_task(subscribe_event_light(gen_states_filter(reserves_init), users_subscribe_callback)),
+        asyncio.create_task(subscribe_event_light(gen_comet_filter(), comet_subscribe_callback)),
+        asyncio.create_task(subscribe_event_light(gen_signals_filter(), signals_subscribe_callback)),
         asyncio.create_task(get_chain_infos_full()),
-        asyncio.create_task(get_pending_transactions_light(pt))
+        asyncio.create_task(get_pending_transactions_light(get_pending_callback))
     ]
 
     await asyncio.gather(*tasks)
@@ -593,6 +506,10 @@ if __name__ == '__main__':
     comet = init_comet_configs(w3_liq, reserves_init)
     signals = init_signals(w3_liq, reserves_init, states.ctokens)
     block_infos = init_block_infos(w3_liq)
+
+    # pre calculation in order to generate hot states
+    complete_states_info(states)
+    states = HighProfitSates(states, DESIRED_PROFIT)
 
     # sync to latest block again if the last sync take a long time
     sync_states(states, w3_liq, reserves_init)

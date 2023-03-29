@@ -1,5 +1,13 @@
 import logging
+import asyncio
+import json
+import ssl
+import certifi
+
 from web3 import Web3
+from websockets import connect
+
+from types_liq import LogReceiptLight, converter
 
 # NOTICE: modify the argument to configure network and project
 # configs: protocol
@@ -18,6 +26,7 @@ ADDRESS_ZERO = "0x0000000000000000000000000000000000000000"
 # configs: logging
 LIQUDATION_LOG_LEVEL = logging.DEBUG
 EVENT_LOG_LEVEL = logging.DEBUG
+CAFILE = certifi.where()
 
 # configs: web3 and nodes
 CONNECTION = {
@@ -48,7 +57,12 @@ CONNECTION = {
     'BSC': {
         'ipc': "/data/bsc/2/geth/geth.ipc",
         'http': "https://skilled-twilight-lambo.bsc.discover.quiknode.pro/6954660fddce3df1513d923a32e91364dcb95659/",
+        'http2': "https://bsc.getblock.io/51c4e58e-a3dd-4708-a298-bbd69bc1be37/mainnet/",
+        'http_local': "http://127.0.0.1:9545",
         'ws': "wss://skilled-twilight-lambo.bsc.discover.quiknode.pro/6954660fddce3df1513d923a32e91364dcb95659/",
+        'http_ym': "https://cool-skilled-surf.bsc.discover.quiknode.pro/bc77724f837002bf73e399f13070bf8772923f8c/",
+        'ws_local': "ws://127.0.0.1:9546",
+        'ws_ym': "wss://bsc.getblock.io/51c4e58e-a3dd-4708-a298-bbd69bc1be37/mainnet/",
         'light': {
             'url': "ws://localhost:51301",
             'auth': "085da4b6a041efcef1ef681e5c9c"
@@ -94,7 +108,7 @@ COMPOUND = {
             'ctoken_congis_file': "users/ctoken_configs_bsc_compound_venus.json",
             'comet_configs_file': "users/comet_configs_bsc_compound_venus.json",
             'users_file': "users/users_bsc_compound_venus.json",
-            'users_file_status': 0  # 1 for continue; 0 for init from template
+            'users_file_status': 1  # 1 for continue; 0 for init from template
         }
     }
 }
@@ -191,11 +205,25 @@ def query_oracle_anchor_configs(w3_comp: Web3Liquidation):
 
 
 def load_provider(provider_type):
-    if provider_type == 'ipc':
-        provider = Web3.IPCProvider(CONNECTION[NETWORK]['ipc'])
-    elif provider_type == 'http':
-        provider = Web3.HTTPProvider(CONNECTION[NETWORK]['http'])
+    provider = CONNECTION[NETWORK][provider_type]
+    if 'ipc' in provider_type:
+        provider = Web3.IPCProvider(provider)
+    elif 'ws' in provider_type:
+        ssl_context = ssl.create_default_context(cafile=CAFILE)
+        provider = Web3.WebsocketProvider(provider, websocket_kwargs={"ssl": ssl_context})
     else:
-        provider = Web3.WebsocketProvider(CONNECTION[NETWORK]['ws'])
+        provider = Web3.HTTPProvider(provider)
 
     return provider
+
+
+def subscribe_callback(obj, response: LogReceiptLight):
+    block_num = response['blockNumber']
+    logs = converter(response)
+
+    if block_num < obj.last_update:
+        return
+
+    for log in logs:
+        obj.update(log)
+    obj.last_update = block_num

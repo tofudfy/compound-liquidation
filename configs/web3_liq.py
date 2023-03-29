@@ -1,5 +1,6 @@
 import os
 from web3 import Web3
+from web3.middleware import geth_poa_middleware
 
 from configs.config import PROVIDER_TYPE, EVENT_LOG_LEVEL, P_ALIAS, SELECTOR, load_provider
 from configs.utils import json_file_load
@@ -29,6 +30,7 @@ class Web3Liquidation(object):
         self.selector = selector
         self.abi = ABICompound(selector)
         self.w3 = Web3(load_provider(provider_type))
+        self.w3.middleware_onion.inject(geth_poa_middleware, layer=0)
 
     def gen_comptroller(self):
         return self.w3.eth.contract(address=P_ALIAS['comet'], abi=self.abi.comptroller_interface)

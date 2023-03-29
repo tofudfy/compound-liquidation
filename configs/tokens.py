@@ -1,5 +1,6 @@
 import time
 import os
+import json
 
 from web3 import Web3
 from typing import Dict, List
@@ -12,29 +13,6 @@ from configs.utils import json_file_load
 
 CONFIGS_PATH_RECORD = P_ALIAS['ctoken_congis_file']
 COMET_CONFIGS_PATH_RECORD = P_ALIAS['comet_configs_file']
-
-COMPOUND_V3_SIGNALS_FILTER_TEMP = """
-{
-    "address": "",
-    "topics": [
-        [
-            "0xf6a97944f31ea060dfde0566e4167c1a1082551e64b60ecb14d599a9d023d451"
-        ]
-    ]
-}
-"""
-
-"""
-NewTransmission (index_topic_1 uint32 aggregatorRoundId, int192 answer, address transmitter, int192[] observations, bytes observers, bytes32 rawReportContext)
-[topic0] 0xf6a97944f31ea060dfde0566e4167c1a1082551e64b60ecb14d599a9d023d451
-"""
-EVENT_ABI = {
-    "0xf6a97944f31ea060dfde0566e4167c1a1082551e64b60ecb14d599a9d023d451": {
-        "name": "NewTransmission",
-        "index_topic": ["uint32"],
-        "data": ["int192", "address", "int192[]", "bytes", "bytes32"]
-    }
-}
 
 
 class AaveReserve(object):
@@ -166,7 +144,7 @@ class CtokenConfigs(object):
         self.ctoken = ctoken
         self.underlying = underlying
         self.symbol_hash = symbol_hash
-        self.decimals = len(str(base_units))
+        self.decimals = len(str(base_units)) - 1
         self.price_source = price_source
         self.price_fixed = price_fixed
         self.swap_router = swap_router
@@ -178,7 +156,7 @@ class CtokenConfigs(object):
         self.reporter_type = reporter_type
 
 
-def new_ctoken_configs(ctoken, reporter, reporter_type, underlying="0x", symbol_hash=bytes("", encoding='utf-8'), base_units=10000000, price_source=0, price_fixed=0, swap_router="0x", reporter_multiplier=0, is_uniswap_reversed=False) -> CtokenConfigs:
+def new_ctoken_configs(ctoken, reporter, reporter_type, underlying="0x", symbol_hash=bytes("", encoding='utf-8'), base_units=100000000, price_source=0, price_fixed=0, swap_router="0x", reporter_multiplier=0, is_uniswap_reversed=False) -> CtokenConfigs:
     return CtokenConfigs(ctoken, underlying, symbol_hash, base_units, price_source, price_fixed, swap_router, reporter, reporter_multiplier, is_uniswap_reversed, reporter_type)
 
 
@@ -190,7 +168,7 @@ def gen_ctokens_configs(w3_comp: Web3Liquidation, ctoken_addr: str, reporter_typ
         token_sc = w3_comp.gen_tokens(ctoken_underlying)
         symbol = token_sc.functions.symbol().call()
     except:
-        symbol = "BNB"  # todo
+        symbol = "vBNB"  # todo: extend
         print(ctoken_addr)
 
     price_sc = w3_comp.gen_price_oracle()
@@ -244,6 +222,7 @@ def query_exchange_rate(w3_liq: Web3Liquidation, token_addr):
     return exchange_rate
 
 
+'''
 # currently unused
 def init_ctokens_infos(w3_comp: Web3Liquidation, reserves) -> Dict:
     ctokens_infos = {}
@@ -255,7 +234,7 @@ def init_ctokens_infos(w3_comp: Web3Liquidation, reserves) -> Dict:
         # symbol = ctoken_contract.functions.symbol().call()
 
         # update by pending tx
-        ctoken_price = init_ctoken_price(w3_comp, ctoken_addr)
+        # ctoken_price = init_ctoken_price(w3_comp, ctoken_addr)
 
         # update by reserve related events
         borrow_index = ctoken_contract.functions.borrowIndex().call()
@@ -272,34 +251,7 @@ def init_ctokens_infos(w3_comp: Web3Liquidation, reserves) -> Dict:
         ctokens_infos[ctoken_addr] = CtokenInfos(ctoken_risks, ctoken_balances)
 
     return ctokens_infos
-
-
-def new_ctoken_price(price=0, last_update=0):
-    return CtokenPrice(price, last_update)
-
-
-class CtokenPrice(object):
-    def __init__(self, price: int, last_update: int):
-        self.price_current = price
-        self.price_cache = 0
-        self.last_update = last_update
-
-    def update(self, new_price, last_update):
-        self.price_cache = self.price
-        self.price_current = new_price
-        self.last_update = last_update
-
-    def revert(self):
-        self.price_current = self.price_cache
-        self.price_cache = 0
-        self.last_update = int(time.time())
-
-
-def init_ctoken_price(w3_comp: Web3Liquidation, ctoken_addr, identifier="latest") -> CtokenPrice:
-    price_oracle = w3_comp.gen_price_oracle()
-    # current_price = price_oracle.functions.price(symbol).call()  # todo: how to get symbol?
-    current_price = price_oracle.functions.getUnderlyingPrice(ctoken_addr).call(block_identifier=identifier)
-    return CtokenPrice(current_price, int(time.time()))
+'''
 
 
 class CtokenInfos(object):
@@ -308,28 +260,6 @@ class CtokenInfos(object):
         self.balances = balances
         self.configs = None
         self.price = None
-
-    def price_scale(self, price):
-        return 10 ** 28 * price // self.configs.decimals
-
-    def update(self, log: LogReceipt):
-        if log.get('removed', False):
-            return
-
-        topic = log['topics'][0].hex()
-        obj = EVENT_ABI.get(topic, None)
-        if obj is None:
-            return
-
-        try:
-            data = bytes.fromhex(log['data'][2:])
-            args_data = trx_abi.decode(obj['data'], data)
-        except:
-            return
-
-        if obj['name'] == 'NewTransmission':
-            answer = args_data[0]
-            raw_report_context = args_data[4]
 
 
 # used for test
@@ -382,13 +312,6 @@ def complete_ctokens_configs_info(obj: Dict[str, CtokenInfos], w3_liq: Web3Liqui
         else:
             ctoken_configs = query_ctokens_configs(w3_liq, ctoken_addr)
         obj[ctoken_addr].configs = ctoken_configs
-
-
-def complete_ctokens_price_info(obj: Dict[str, CtokenInfos], w3_liq: Web3Liquidation, reserves: List, identifier="latest"):
-    for ctoken_addr in reserves:
-        # update by pending tx
-        ctoken_price = init_ctoken_price(w3_liq, ctoken_addr, identifier)
-        obj[ctoken_addr].price = ctoken_price
 
 
 def complete_ctokens_risks(obj: Dict[str, CtokenInfos], w3_liq: Web3Liquidation, reserves: List):
