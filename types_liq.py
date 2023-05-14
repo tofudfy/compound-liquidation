@@ -4,11 +4,21 @@ from hexbytes import HexBytes
 from web3.types import LogReceipt
 
 
+class SignedTxDIY(TypedDict):
+    nonce: int
+    gasPrice: int
+    gas: int
+    to: bytes
+    value: int
+    data: bytes
+
+
 class LogEventLight(TypedDict):
     address: str
     topics: List[str]
     txIndex: int
     data: str
+    transactionHash: str
 
 
 class LogReceiptLight(TypedDict):
@@ -33,7 +43,11 @@ def converter(dct: LogReceiptLight) -> List[LogReceipt]:
             logs.append(LogReceipt(**{
                 "address": address,
                 "data": data,
-                "topics": topics
+                "topics": topics,
+                "blockNumber": dct['blockNumber'],
+                "blockHash": HexBytes(bytes.fromhex(dct['blockHash'][2:])),
+                "transactionIndex": v['txIndex'],
+                "transactionHash": HexBytes(bytes.fromhex(v['transactionHash'][2:]))
             }))
 
     return logs

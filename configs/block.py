@@ -43,9 +43,8 @@ class BlockInfos(object):
 
 def init_block_infos(w3_liq: Web3Liquidation) -> BlockInfos:
     w3 = w3_liq.w3
-    w3.middleware_onion.inject(geth_poa_middleware, layer=0)
     block: BlockData = w3.eth.get_block('latest')
     block_num = block['number']
     block_time = block['timestamp']
-    base_fee = block['baseFeePerGas']
+    base_fee = block.get('baseFeePerGas', 0)
     return BlockInfos(block_num, block_time, base_fee)

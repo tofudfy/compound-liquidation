@@ -1,7 +1,8 @@
 import time
 import json
 
-from tronpy.abi import trx_abi
+# from tronpy.abi import trx_abi
+from eth_abi import decode
 from web3.types import LogReceipt
 from typing import Dict, List
 
@@ -44,12 +45,12 @@ EVENT_ABI = {
 
 def gen_comet_filter():
     filt = json.loads(COMPOUND_V3_CONFIGS_FILTER_TEMP)
-    filt['address'] = P_ALIAS['comet']
+    filt['address'] = [P_ALIAS['comet']]
     return filt
 
 
 class CometConfigs(object):
-    def __init__(self, liq_incentive: int, closs_factor: int, ctokens_collateral_factor: Dict, last_update: int):
+    def __init__(self, liq_incentive: int, closs_factor: int, ctokens_collateral_factor: Dict[str, int], last_update: int):
         self.liq_incentive = liq_incentive
         self.closs_factor = closs_factor
         self.ctokens_collateral_factor = ctokens_collateral_factor
@@ -66,25 +67,23 @@ class CometConfigs(object):
 
         try:
             data = bytes.fromhex(log['data'][2:])
-            args_data = trx_abi.decode(obj['data'], data)
-        except:
-            return
+            args_data = decode(obj['data'], data)
+        except Exception as e:
+            raise Exception(f'comet update failed: {{"error": {e}, "log":{log}}}')
 
         if obj['name'] == 'NewLiquidationIncentive':
             new = args_data[1]
             self.liq_incentive = new
-            self.last_update = int(time.time())
+            self.last_update = log['blockNumber']
 
         if obj['name'] == 'NewCollateralFactor':
             new = args_data[2]
-            reserve = '0x' + trx_abi.encode_single("address", args_data[0]).hex()[24:]
-            self.ctokens[reserve].risks.collateral_factor = new
-            '''
-            log_v2.debug("new collateral factor of reserve {} updated: {}, height: {}".format(reserve, collateral_factor[reserve], log['blockNumber']))
-            '''
+            reserve = args_data[0]
+            self.ctokens_collateral_factor[reserve] = new
+            self.last_update = log['blockNumber']
 
 
-def init_comet_configs(w3_liq: Web3Liquidation, reserves: List):
+def init_comet_configs(w3_liq: Web3Liquidation, reserves: List, block_num: int):
     comptroller = w3_liq.gen_comptroller()
     liquidation_incentive = comptroller.functions.liquidationIncentiveMantissa().call()
     closs_factor = comptroller.functions.closeFactorMantissa().call()
@@ -94,7 +93,7 @@ def init_comet_configs(w3_liq: Web3Liquidation, reserves: List):
         res = comptroller.functions.markets(ctoken_addr).call()
         ctokens_cf[ctoken_addr] = res[1]
 
-    return CometConfigs(liquidation_incentive, closs_factor, ctokens_cf, int(time.time()))
+    return CometConfigs(liquidation_incentive, closs_factor, ctokens_cf, block_num)
 
 
 if __name__ == '__main__':

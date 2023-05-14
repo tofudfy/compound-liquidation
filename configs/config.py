@@ -31,17 +31,17 @@ CAFILE = certifi.where()
 # configs: web3 and nodes
 CONNECTION = {
     'Ethereum': {
+        'chain_id': 1,
         'ipc': "/data/eth/mev/ethereum/geth.ipc",
         # 'http': "https://eth-mainnet.g.alchemy.com/v2/-rVE6Yp-pyFoYbe7wzM70zDUvN_Vlwkb",
         # 'http': "https://eth-mainnet.g.alchemy.com/v2/1vSGEJ78c6cVpaXsQxP3fA6D0mKVBGMs",
         'http': "https://eth-mainnet.g.alchemy.com/v2/hAtPgPTh1OhcpfjZq9mWz08ib4Zf_lOM",
         # 'ws': "wss://eth-mainnet.g.alchemy.com/v2/1vSGEJ78c6cVpaXsQxP3fA6D0mKVBGMs",
-        'ws': "ws://3.115.81.7:8546",
+        'ws_local': "ws://3.115.81.7:8546",
         'light': {
             'url': "ws://localhost:51301",  # "ws://18.198.151.1:51315",
             'auth': "085da4b6a041efcef1ef681e5c9c"
         },
-        "contract": "0x",
         "block_interval": 12
     },
     'Polygon': {
@@ -55,23 +55,26 @@ CONNECTION = {
         "block_interval": 2
     },
     'BSC': {
+        'chain_id': 56,
         'ipc': "/data/bsc/2/geth/geth.ipc",
         'http': "https://skilled-twilight-lambo.bsc.discover.quiknode.pro/6954660fddce3df1513d923a32e91364dcb95659/",
         'http2': "https://bsc.getblock.io/51c4e58e-a3dd-4708-a298-bbd69bc1be37/mainnet/",
+        'http3': "https://few-autumn-asphalt.bsc.discover.quiknode.pro/64bec924a8164cc619888113074e0c91b738963d/",
+        'http4': "https://withered-crimson-choice.bsc.discover.quiknode.pro/ed564a1ea9c1b5543f56c6338d742d3e260c838b/",
         'http_local': "http://127.0.0.1:9545",
         'ws': "wss://skilled-twilight-lambo.bsc.discover.quiknode.pro/6954660fddce3df1513d923a32e91364dcb95659/",
         'http_ym': "https://cool-skilled-surf.bsc.discover.quiknode.pro/bc77724f837002bf73e399f13070bf8772923f8c/",
-        'ws_local': "ws://127.0.0.1:9546",
+        'ws_local': "ws://localhost:9546",
         'ws_ym': "wss://bsc.getblock.io/51c4e58e-a3dd-4708-a298-bbd69bc1be37/mainnet/",
         'light': {
-            'url': "ws://localhost:51301",
+            'url': "ws://localhost:51316",
             'auth': "085da4b6a041efcef1ef681e5c9c"
         },
-        "contract": "0x",
         "block_interval": 3
     }
 }
 INTVL = CONNECTION[NETWORK]['block_interval']
+URL = CONNECTION[NETWORK]
 
 COMPOUND = {
     'Ethereum': {
@@ -82,8 +85,8 @@ COMPOUND = {
             'base_currency': "USD",
             'signals': ['aggregator'],
             'log_file': {
-                'liq': ['liquidation_ethereum_compound_v3.log', 'liq_ethereum_com_v3'],
-                'event': ['events_ethereum_compound_v3.log', 'eve_ethereum_com_v3'],
+                'liq': ['liquidation_ethereum_compound_v3', 'liq_ethereum_com_v3'],
+                'event': ['events_ethereum_compound_v3', 'eve_ethereum_com_v3'],
             },
             'ctoken_congis_file': "users/ctoken_configs_ethereum_compound_v3.json",
             'comet_configs_file': "users/comet_configs_ethereum_compound_v3.json",
@@ -97,18 +100,21 @@ COMPOUND = {
     'BSC': {
         'venus': {
             'init_block_number': 2471511,
+            'health_factor_threshold': 1,
             'comet': "0xfD36E2c2a6789Db23113685031d7F16329158384",
+            'vai': "0x004065D34C6b18cE4370ced1CeBDE94865DbFAFE",
             # 'price_oracle': "",
             'base_currency': "USD",
             'signals': ['aggregator'],
             'log_file': {
-                'liq': ['liquidation_bsc_compound_venus.log', 'liq_bsc_com_venus'],
-                'event': ['events_bsc_compound_venus.log', 'eve_bsc_com_venus'],
+                'liq': ['liquidation_bsc_compound_venus', 'liq_bsc_com_venus'],
+                'event': ['events_bsc_compound_venus', 'eve_bsc_com_venus'],
             },
             'ctoken_congis_file': "users/ctoken_configs_bsc_compound_venus.json",
             'comet_configs_file': "users/comet_configs_bsc_compound_venus.json",
             'users_file': "users/users_bsc_compound_venus.json",
-            'users_file_status': 1  # 1 for continue; 0 for init from template
+            'users_file_status': 1,  # 1 for continue; 0 for init from template
+            'contract': "0x57abA600c3880d73b42B1197B90224bA8e1e0C5A"
         }
     }
 }
@@ -207,12 +213,12 @@ def query_oracle_anchor_configs(w3_comp: Web3Liquidation):
 def load_provider(provider_type):
     provider = CONNECTION[NETWORK][provider_type]
     if 'ipc' in provider_type:
-        provider = Web3.IPCProvider(provider)
+        provider = Web3.IPCProvider(provider, timeout=30)
     elif 'ws' in provider_type:
         ssl_context = ssl.create_default_context(cafile=CAFILE)
         provider = Web3.WebsocketProvider(provider, websocket_kwargs={"ssl": ssl_context})
     else:
-        provider = Web3.HTTPProvider(provider)
+        provider = Web3.HTTPProvider(provider, request_kwargs={'timeout': 30})
 
     return provider
 

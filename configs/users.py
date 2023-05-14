@@ -1,18 +1,21 @@
 import json
 import os
+import math
+import time
 
 from collections import deque
-from typing import Dict, List
-from tronpy.abi import trx_abi
+from typing import Dict, List, Tuple
 from eth_abi import decode
 from web3 import Web3
 from web3.types import LogReceipt
 from eth_typing import Address, ChecksumAddress
 
 from configs.config import P_ALIAS, EXP_SCALE
-from configs.tokens import CompReserve, tokens_load, reserves_load, new_reserve, backtesting_reserves, CtokenInfos, CONFIGS_PATH_RECORD, COMET_CONFIGS_PATH_RECORD
+from configs.tokens import CtokenInfos, tokens_load, reserves_load, new_reserve, CONFIGS_PATH_RECORD, COMET_CONFIGS_PATH_RECORD
 from configs.utils import json_file_load, json_write_to_file, query_events_loop, data_cache_hook
 from configs.web3_liq import Web3Liquidation
+from configs.protocol import Web3CompoundVenues, backtesting_reserves
+from configs.event import State
 
 from configs.config import RESERVES
 
@@ -130,7 +133,7 @@ COMPOUND_V3_USERS_FILTER_TEMP = """
 
 def gen_states_filter(reserves: List):
     filt = json.loads(COMPOUND_V3_USERS_FILTER_TEMP)
-    filt['address'] = reserves
+    filt['address'] = reserves.copy()
     return filt
 
 
@@ -152,9 +155,12 @@ class HealthFactor(object):
 
 
 class UserStates(object):
-    def __init__(self, reserves: Dict, health_factor: HealthFactor):
+    def __init__(self, reserves: Dict, health_factor: HealthFactor, vai_repay=0):
         self.reserves = reserves_load(reserves)
         self.health_factor = health_factor
+
+        # BSC venus protocol
+        self.vai_repay = vai_repay
 
     def get_health_factor(self):
         return self.health_factor
@@ -169,15 +175,31 @@ class States(object):
         self.ctokens = ctokens_infos
         self.last_update = last_update
         self.block_hash = block_hash
+        self.plug_in: State = None
+
+    def gen_states_filter(self, reserves: List):
+        filt = json.loads(COMPOUND_V3_USERS_FILTER_TEMP)
+        filt['address'] = reserves.copy()
+
+        if self.plug_in is not None:
+            filt['address'] += self.plug_in.addres
+            filt['topics'][0] += self.plug_in.gen_topics()
+
+        return filt
 
     def check_user_and_reserve(self, user, reserve):
+        change_type = 1  # 1 for already exist
         if self.users_states.get(user, None) is None:
             self.users_states[user] = UserStates({}, new_health_factor())
+            change_type = 2  # 2 for newly added
 
         if self.users_states[user].reserves.get(reserve, None) is None:
             self.users_states[user].reserves[reserve] = new_reserve()
+            change_type = 2
+        
+        return change_type
 
-    def users_filtering(self, tokens_addr):
+    def users_filtering(self, tokens_addr: List):
         users = []
         for usr, states in self.users_states.items():
             for token_addr in tokens_addr:
@@ -185,6 +207,21 @@ class States(object):
                     users.append(usr)
                     break
         return users
+
+    def get_users_sampling(self, index, intervals):
+        array = list(self.users_states.keys())
+        l = len(array)
+        length = math.ceil(l / intervals)
+
+        left = length * index
+        if left > l:
+            left = left % l
+        
+        right = left + length 
+        if right > l:
+            right = l
+
+        return array[left:right]
 
     def to_json(self):
         users_new_dict = {}
@@ -197,6 +234,8 @@ class States(object):
 
             new_hf_json = usr_states.health_factor.to_list()
             users_new_dict[usr]['healthFactor'] = new_hf_json
+
+            users_new_dict[usr]['vaiRepay'] = usr_states.vai_repay
 
         ctokens_risks_new_dict = {}
         ctokens_balances_new_dict = {}
@@ -262,26 +301,29 @@ class States(object):
             if self.users_states.get(fake_user, None) is not None:
                 self.users_states.pop(fake_user)
 
-    def update(self, log: LogReceipt) -> List:
-        users_changed = []
+    def update(self, log: LogReceipt) -> Dict:
+        if self.plug_in is not None: 
+            res = self.plug_in.update(log)
+            self.plug_in.storage.update(res)
+
+        # use dict to reduce reduplicate users
+        users_changed = {}
         if log.get('removed', False):
-            # log_v2.info("log is removed {}".format(log))
-            return
+            return {}
 
         topic = log['topics'][0].hex()
         obj = EVENT_ABI.get(topic, None)
         if obj is None:
-            # log_v2.error("unexpected topics in get users: {}".format(log))
-            return
+            return {}
 
         try:
             data = bytes.fromhex(log['data'][2:])
             args_data = decode(obj['data'], data)  # todo: optimization
         except Exception as e:
-            # log_v2.error(e)
-            return
+            raise Exception(f'user balances update failed: {{"error": {e}, "log":{log}}}')
 
         reserve = log['address']
+        # when init the states, the ctokens used are check sum address
         reserve = Web3.toChecksumAddress(reserve)
 
         # include: Transfer, Mint, Redeem
@@ -290,8 +332,8 @@ class States(object):
             to_user = log['topics'][2][12:].hex()
             amount = args_data[0]
 
-            self.check_user_and_reserve(from_user, reserve)
-            self.check_user_and_reserve(to_user, reserve)
+            change_type1 = self.check_user_and_reserve(from_user, reserve)
+            change_type2 = self.check_user_and_reserve(to_user, reserve)
 
             if from_user == reserve.lower():
                 self.ctokens[reserve].balances.total_supply += amount
@@ -301,16 +343,12 @@ class States(object):
 
             self.users_states[from_user].reserves[reserve].col_amount -= amount
             self.users_states[to_user].reserves[reserve].col_amount += amount
-            users_changed.append(from_user)
-            users_changed.append(to_user)
+            users_changed[from_user] = change_type1
+            users_changed[to_user] = change_type2
 
-            '''
-            log_v2.debug("{} transfer {} amount of reserve {}, current COLLATERAL balance {}".
-                        format(from_user, amount, reserve, users_raw['users'][from_user][reserve][0]))
-            log_v2.debug("{} receive {} amount of reserve {}, current COLLATERAL balance {}".
-                        format(to_user, amount, reserve, users_raw['users'][from_user][reserve][0]))
-            log_v2.debug("reserve {} total supply {}".format(reserve, total_supply_dict[reserve]))
-            '''
+            # "hash": "{log["transactionHash"].hex()},  the tx hash from light node are all zero
+            print(f'{{"user": "{from_user}", "reserve": "{reserve}", "update": -{amount}, "states": {self.users_states[from_user].reserves[reserve].__dict__}, "block_hash": "{log["blockHash"].hex()}", "block_num": {log["blockNumber"]}}}')
+            print(f'{{"user": "{to_user}", "reserve": "{reserve}", "update": {amount}, "states": {self.users_states[to_user].reserves[reserve].__dict__},  "block_hash": "{log["blockHash"].hex()}", "block_num": {log["blockNumber"]}}}')
 
         if obj['name'] == 'RepayBorrow':
             borrower = args_data[1]  # '0x' + trx_abi.encode_single("address", args_data[1]).hex()[24:]
@@ -318,15 +356,13 @@ class States(object):
             repay_amount = args_data[2]
             total_borrow = args_data[4]
 
-            self.check_user_and_reserve(borrower, reserve)
-            users_changed.append(borrower)
+            change_type = self.check_user_and_reserve(borrower, reserve)
+            users_changed[borrower] = change_type
             self.users_states[borrower].reserves[reserve].debt_amount = amount
             self.users_states[borrower].reserves[reserve].debt_interest = self.ctokens[reserve].risks.borrow_index
             self.ctokens[reserve].balances.total_borrow = total_borrow
-            '''
-            log_v2.debug("borrower {} {} {} amount of reserve {}, current DEBT balance {}, borrow index {}, total borrow {}".
-                        format(borrower, obj['name'], repay_amount, reserve, amount, borrow_index_dict[reserve], total_borrow_dict[reserve]))      
-            '''
+
+            print(f'{{"user": "{borrower}", "reserve": "{reserve}", "update": {repay_amount}, "states": {self.users_states[borrower].reserves[reserve].__dict__},  "block_hash": "{log["blockHash"].hex()}", "block_num": {log["blockNumber"]}}}')
 
         if obj['name'] == 'Borrow':
             borrower = args_data[0]  # '0x' + trx_abi.encode_single("address", args_data[0]).hex()[24:]
@@ -334,15 +370,13 @@ class States(object):
             borrow_amount = args_data[1]
             total_borrow = args_data[3]
 
-            self.check_user_and_reserve(borrower, reserve)
-            users_changed.append(borrower)
+            change_type = self.check_user_and_reserve(borrower, reserve)
+            users_changed[borrower] = change_type
             self.users_states[borrower].reserves[reserve].debt_amount = amount
             self.users_states[borrower].reserves[reserve].debt_interest = self.ctokens[reserve].risks.borrow_index
             self.ctokens[reserve].balances.total_borrow = total_borrow
-            '''
-            log_v2.debug("borrower {} {} {} amount of reserve {}, current DEBT balance {}, borrow index {}, total borrow {}".
-                        format(borrower, obj['name'], borrow_amount, reserve, amount, borrow_index_dict[reserve], total_borrow_dict[reserve]))       
-            '''
+
+            print(f'{{"user": "{borrower}", "reserve": "{reserve}", "update": {borrow_amount}, "states": {self.users_states[borrower].reserves[reserve].__dict__},  "block_hash": "{log["blockHash"].hex()}", "block_num": {log["blockNumber"]}}}')
 
         if obj['name'] == 'AccrueInterest' or obj['name'] == 'AccrueInterest_delegate':
             if obj['name'] == 'AccrueInterest_delegate':
@@ -377,34 +411,7 @@ class States(object):
             '''
 
         return users_changed
-
-
-def filter_states(users_states: Dict[str, UserStates], profit_thres) -> Dict[str, UserStates]:
-    users_states_trimed = {}
-    for usr, data in users_states.items():
-        if data.health_factor.debt_volume > profit_thres:
-            users_states_trimed[usr] = data
-
-    return users_states_trimed
-
-
-class HighProfitSates(States):
-    def __init__(self, full_states: States, profit_thres: float):
-        super().__init__(
-            filter_states(full_states.users_states, profit_thres),
-            full_states.ctokens, full_states.last_update, full_states.block_hash
-        )
-        self.parent = full_states
-        self.update_users = []
-        self.debt_desired = profit_thres * 2 * EXP_SCALE
-
-    def update(self, log: LogReceipt):
-        new_updated_users: List = super().update(log)
-        for usr in new_updated_users:
-            self.update_debt(usr)
-        
-        self.update_users += new_updated_users
-
+    
     def update_debt(self, usr: str):
         sum_borrow_plus_effects = 0
         reserves = self.users_states[usr].reserves
@@ -424,15 +431,67 @@ class HighProfitSates(States):
 
         self.users_states[usr].health_factor.debt_volume = sum_borrow_plus_effects 
 
+
+def filter_states(users_states: Dict[str, UserStates], profit_thres) -> Dict[str, UserStates]:
+    users_states_trimed = {}
+    for usr, data in users_states.items():
+        if data.health_factor.debt_volume > profit_thres:
+            users_states_trimed[usr] = data
+
+    return users_states_trimed
+
+
+class HighProfitSates(States):
+    def __init__(self, full_states: States, profit_thres: float):
+        self.debt_desired = profit_thres * 20  # 5% of profit
+        super().__init__(
+            filter_states(full_states.users_states, self.debt_desired),
+            full_states.ctokens, full_states.last_update, full_states.block_hash
+        )
+        self.plug_in = full_states.plug_in
+        self.parent = full_states
+        self.update_users = {}
+        
+
+    def update(self, log: LogReceipt) -> Dict:
+        new_updated_users: Dict = super().update(log)
+
+        for usr, type in new_updated_users.items():
+            # when low profit user is update (tyep 2: not recored in high profit states)
+            # the balance of the newly updated user is incomplete, thus we need to read from full states
+            if type == 2:
+                old_states: UserStates = self.parent.users_states.get(usr, None)
+                if old_states is None:
+                    continue
+
+                for key, value in old_states.reserves.items():
+                    if self.users_states[usr].reserves.get(key, None) is not None:
+                        self.users_states[usr].reserves[key].col_amount += value.col_amount 
+                        self.users_states[usr].reserves[key].debt_amount += value.debt_amount 
+                        if self.users_states[usr].reserves[key].debt_interest == 0:
+                            self.users_states[usr].reserves[key].debt_interest = value.debt_interest 
+                        # will update later
+                        # self.users_states[usr].reserves[key].is_col_liq = value.is_col_liq
+                    else:
+                        self.users_states[usr].reserves[key] = value
+
+            # todo: remove users with insufficient debt volume
+            # self.update_debt(usr)
+            # self.write_back_lowprof_states(usr)
+
+        # record all users updated since last copy from full states
+        self.update_users.update(new_updated_users)
+
+        return new_updated_users
+
     def write_back_changed_states(self):
         for usr in self.update_users:
             self.parent.users_states[usr] = self.users_states[usr]
 
-    def write_back_lowprof_states(self):
-        for usr in self.update_users:
-            state = self.eliminate_lowprof_states(usr)
-            if state is not None:
-                self.parent.users_states[usr] = state
+    def write_back_lowprof_states(self, usr):
+        state = self.eliminate_lowprof_states(usr)
+        if state is not None:
+            self.parent.users_states[usr] = state
             
     def eliminate_lowprof_states(self, usr: str) -> UserStates:
         if self.users_states[usr].health_factor.debt_volume < self.debt_desired:
@@ -453,7 +512,7 @@ class FIFOStates(object):
             old_elemnt.write_back_changed_states()
 
 
-def users_load(path: str) -> (Dict[str, UserStates], int, str):
+def users_load(path: str) -> Tuple[Dict[str, UserStates], int, str]:
     if P_ALIAS['users_file_status'] == 1:
         file_path_start = P_ALIAS['users_file']
         users_raw = json_file_load(path + os.sep + file_path_start)
@@ -467,8 +526,9 @@ def users_load(path: str) -> (Dict[str, UserStates], int, str):
 
     results = {}
     for user, user_states in users_states.items():
-        # todo: health_factor = user_states['healthFactor'] 
-        results[user] = UserStates(user_states['reserves'], new_health_factor())
+        health_factor = user_states['healthFactor']
+        vai_repay = user_states['vaiRepay'] 
+        results[user] = UserStates(user_states['reserves'], new_health_factor(*health_factor), vai_repay)
 
     return results, last_update, block_hash
 
@@ -485,12 +545,16 @@ def reload_states(reserves: List) -> States:
     return States(users_states, ctokens_infos, last_update_u, block_hash)
 
 
+# used for test only
 def query_reserves(usr: str, w3_liq: Web3Liquidation, reserves: List, identifier="latest") -> Dict[str, List]:
     user_reserves = {}
     usr = Web3.toChecksumAddress(usr)
-    for ctoken_addr in reserves:
+    comptroller = w3_liq.gen_comptroller() 
+
+    reserves_as_market = comptroller.functions.getAssetsIn(usr).call(block_identifier=identifier)
+    for ctoken_addr in reserves_as_market: # reserves:
         try:
-            ctoken_contract = w3_liq.gen_tokens(ctoken_addr)
+            ctoken_contract = w3_liq.gen_ctokens(ctoken_addr)
             res = ctoken_contract.functions.getAccountSnapshot(usr).call(block_identifier=identifier)
             print(f'user {usr[:6]} reserve "{ctoken_addr}" at {identifier} snapshot {res}')
             error = res[0]
@@ -498,7 +562,7 @@ def query_reserves(usr: str, w3_liq: Web3Liquidation, reserves: List, identifier
             debt_amount = res[2]
 
             if error == 0 and col_amount != 0 or debt_amount != 0:
-                user_reserves[ctoken_addr] = [col_amount, debt_amount, 1]
+                user_reserves[ctoken_addr] = [col_amount, 1, debt_amount, 1]
         # some ctoken contract may not deployed with the identified specified
         except:
             continue
@@ -506,50 +570,90 @@ def query_reserves(usr: str, w3_liq: Web3Liquidation, reserves: List, identifier
     return user_reserves
 
 
-def backtesting_users(w3_liq: Web3Liquidation, user: str, reserves: List, block_num: int):
+def backtesting_users(w3_liq: Web3CompoundVenues, user: str, reserves: List, block_num: int):
     users_states = {}
     reserves = query_reserves(user, w3_liq, reserves, block_num)
     print(reserves)
-    users_states[user] = UserStates(reserves, new_health_factor())
+    vai_repay = w3_liq.query_user_vai_repay(user)
+    users_states[user] = UserStates(reserves, new_health_factor(), vai_repay)
 
     return users_states
 
 
-def backtesting_states(w3_liq: Web3Liquidation, user: str, reserves: List, block_num: int) -> States:
+def backtesting_states(w3_liq: Web3CompoundVenues, user: str, reserves: List, block_num: int) -> States:
     users_states = backtesting_users(w3_liq, user, reserves, block_num)
     reserves_trim = list(users_states[user].reserves.keys())
     ctokens_infos = backtesting_reserves(w3_liq, reserves_trim, block_num)
     return States(users_states, ctokens_infos, int(block_num), "")
 
 
-def sync_states(states: States, w3_liq: Web3Liquidation, reserves: List):
-    w3 = w3_liq.w3
-    block_number = w3.eth.get_block_number()
-    # block_number = states.last_update + 800000
-    filt = gen_states_filter(reserves)
+def user_state_extend_hook(obj: States, res: Dict, count: int):
+    w3_liq = Web3Liquidation()
+    for usr, _ in res.items():
+        reload_and_extend_states(w3_liq, obj, usr)
 
-    query_events_loop(w3, states, filt, block_number)  # , data_cache_hook)
+    return count
+
+
+def sync_states(states: States, w3_liq: Web3Liquidation, reserves: List, delay=0):
+    w3 = w3_liq.w3
+    block_number = w3.eth.get_block_number() - delay
+    # block_number = states.last_update + 10000
+    filt = states.gen_states_filter(reserves)
+
+    query_events_loop(w3, states, filt, block_number, user_state_extend_hook)  # , data_cache_hook)
+
+
+def reload_and_extend_states(w3_liq: Web3Liquidation, states: States, usr: str):
+    comptroller = w3_liq.gen_comptroller()
+    user = Web3.toChecksumAddress(usr)
+    reserves_as_market = comptroller.functions.getAssetsIn(user).call()
+
+    full_reserves = list(states.users_states[usr].reserves.keys())
+    difference = list(set(full_reserves) - set(reserves_as_market))
+
+    for reserve in reserves_as_market:
+        if states.users_states[usr].reserves.get(reserve, None) is None:
+            continue
+        states.users_states[usr].reserves[reserve].is_col_liq = 1
+
+    # todo: how to set is_col_liq to 0 ? 
+    for reserve in difference:
+        states.users_states[usr].reserves[reserve].is_col_liq = 0
+
+
+def reload_and_extend_states_test():
+    w3_liq = Web3Liquidation(provider_type='http')
+    reserves = RESERVES
+    states = reload_states(reserves)
+    for usr, _ in states.users_states.items():
+        reload_and_extend_states(w3_liq, states, usr)
+        time.sleep(0.1)
+
+    states.cache() 
 
 
 def reload_and_cache_test():
-    # w3_liq = Web3Liquidation(provider_type='http2')
+    # w3_liq = Web3Liquidation(provider_type='http3')
     # w3_liq = Web3Liquidation(provider_type='ws_ym')
     w3_liq = Web3Liquidation()
     # reserves = w3_liq.query_markets_list()
     reserves = RESERVES
     states = reload_states(reserves)
-    sync_states(states, w3_liq, reserves)
+    sync_states(states, w3_liq, reserves, 1000)
     states.cache()
 
 
 def users_states_test():
     w3_liq = Web3Liquidation(provider_type='http')
     reserves = RESERVES
-    user = "0xe0b8fffb423bd44ca7c97c9f5aeefb4605614f73"
-    last_update = 12195511
-    query_reserves(user, w3_liq, reserves, last_update)
+    user = "0xF165FC6bd6A2eE937ab77311d1078f16711CF007"
+    last_update = 27131350
+    res = query_reserves(user, w3_liq, reserves, last_update)
+    print(res)
 
 
 if __name__ == '__main__':
     reload_and_cache_test()
+    # reload_and_extend_states_test()
     # users_states_test()
