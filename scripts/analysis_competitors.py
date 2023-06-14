@@ -15,41 +15,37 @@ from logger import Logger
 
 from web3 import Web3
 from web3.middleware import geth_poa_middleware
-from configs.config import CONNECTION, NETWORK, ADDRESS_ZERO, load_provider
+from configs.config import CONNECTION, NETWORK, BNB48, load_provider
 from analysis_utils import convert_tar_to_pattern, line_time_parser, line_json_parser, unix_time_ms, unix_to_readable, unix_to_readable_ms
 
 
-COMPETIPORS = [
-    '0xf060C20bcB2e981cA6d9ec1bE6702Bd762D2678F',
-    '0x6b18AF935E9a378eEFfD7324b7f37E1e419b4215',
-    '0xb6E496A4Aa6353Ebf6dE6f354ADCCaB513d3a566',
-    '0x53dcd3c3Ef1DFa16D4c2d8D053dbdD379C70b6d0',
-    '0x3a3452921Ed20703d95238F58EA5Ad7eDF0A495F',
-    '0xe3c941Ff0cdA0DD6f0AF092039012266BA620Bb6',
-    '0xEe85D50607eD2d1413EABf789eCA6f138A9C362F',
-    '0xEaD160F602Ccd12908c100263c4FD8a7ED8f979B',
-    '0x09844cb359f768a2a7D185dBf2d972dfb019FE53',
-    '0xfb002d7615b9782b7cC8A85aEb34161c78952bd4',
+COMPETIPORS = {
+    "BSC": [
+        '0xf060C20bcB2e981cA6d9ec1bE6702Bd762D2678F',
+        '0x6b18AF935E9a378eEFfD7324b7f37E1e419b4215',
+        '0xb6E496A4Aa6353Ebf6dE6f354ADCCaB513d3a566',
+        '0x53dcd3c3Ef1DFa16D4c2d8D053dbdD379C70b6d0',
+        '0x3a3452921Ed20703d95238F58EA5Ad7eDF0A495F',
+        '0xe3c941Ff0cdA0DD6f0AF092039012266BA620Bb6',
+        '0xEe85D50607eD2d1413EABf789eCA6f138A9C362F',
+        '0xEaD160F602Ccd12908c100263c4FD8a7ED8f979B',
+        '0x09844cb359f768a2a7D185dBf2d972dfb019FE53',
+        '0xfb002d7615b9782b7cC8A85aEb34161c78952bd4',
 
-    '0xC1BE2a2290DBB51dDF97869BEcFEb758D6c00230',
-    '0xBc12B1fFE8C0c8Aa0004ECfB6969b95aAa1727E0',
-    '0x2B1a7a457a2c55BA1e03C087CC3e4E5B05b6360F',
+        '0xC1BE2a2290DBB51dDF97869BEcFEb758D6c00230',
+        '0xBc12B1fFE8C0c8Aa0004ECfB6969b95aAa1727E0',
+        '0x2B1a7a457a2c55BA1e03C087CC3e4E5B05b6360F',
 
-    # 0508
-    '0xECF32a129124Dc322bDCe86A690D91B9C7b46d78',
-    '0x4c3E78594F12973CE594C29c4ac18195E5485381',
-    '0xEB8Fea72614b75024b83D6cdE286739DB501125B'
-]
-BNB48 = [
-    '0x72b61c6014342d914470eC7aC2975bE345796c2b',
-    '0xa6f79B60359f141df90A0C745125B131cAAfFD12',
-    '0x0BAC492386862aD3dF4B666Bc096b0505BB694Da',
-    '0xD1d6bF74282782B0b3eb1413c901D6eCF02e8e28',
-    '0xb218C5D6aF1F979aC42BC68d98A5A0D796C6aB01',
-    '0x4396e28197653d0C244D95f8C1E57da902A72b4e',
-    '0x9bB832254BAf4E8B4cc26bD2B52B31389B56E98B',
-    '0x9F8cCdaFCc39F3c7D6EBf637c9151673CBc36b88'
-]
+        # 0508
+        '0xECF32a129124Dc322bDCe86A690D91B9C7b46d78',
+        '0x4c3E78594F12973CE594C29c4ac18195E5485381',
+        '0xEB8Fea72614b75024b83D6cdE286739DB501125B'
+    ],
+    "Ethereum": [
+        "0x9d5A494Cec2934Dc01Ec1cAF595840450Bd30f9B",
+    ]
+}
+
 PREFIX = "/data/fydeng/"  # "./" 
 HASH_ZERO = "0x0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -63,7 +59,7 @@ def pending_callback(message, logger):
 
 def convert_to_txfilter():
     res = []
-    for comp in COMPETIPORS:
+    for comp in COMPETIPORS[NETWORK]:
         res.append(
             {'to': comp}
         )
@@ -158,7 +154,7 @@ def read_and_parse(file, targets, log_filter):
 
             tx = w3.eth.get_transaction(tx_hash)
             contract = tx['to']
-            if contract not in COMPETIPORS:
+            if contract not in COMPETIPORS[NETWORK]:
                 is_comp = False
                 print(f"not in listening: {contract}")
             else:

@@ -1,22 +1,16 @@
 import logging
-import asyncio
-import json
 import ssl
 import certifi
-
 from web3 import Web3
-from websockets import connect
-
-from types_liq import LogReceiptLight, converter
+from types_light import LogReceiptLight, converter
 
 # NOTICE: modify the argument to configure network and project
 # configs: protocol
 PROVIDER_TYPE = 'ipc'
-# NETWORK = "Ethereum"
-# SELECTOR = 'v3'
-NETWORK = 'BSC'
-SELECTOR = 'venus'
-
+NETWORK = "Ethereum"
+SELECTOR = 'v2'
+# NETWORK = 'BSC'
+# SELECTOR = 'venus'
 
 # utils: protocol constant
 EXP_SCALE = 10 ** 18
@@ -32,17 +26,19 @@ CAFILE = certifi.where()
 CONNECTION = {
     'Ethereum': {
         'chain_id': 1,
-        'ipc': "/data/eth/mev/ethereum/geth.ipc",
-        # 'http': "https://eth-mainnet.g.alchemy.com/v2/-rVE6Yp-pyFoYbe7wzM70zDUvN_Vlwkb",
-        # 'http': "https://eth-mainnet.g.alchemy.com/v2/1vSGEJ78c6cVpaXsQxP3fA6D0mKVBGMs",
-        'http': "https://eth-mainnet.g.alchemy.com/v2/hAtPgPTh1OhcpfjZq9mWz08ib4Zf_lOM",
-        # 'ws': "wss://eth-mainnet.g.alchemy.com/v2/1vSGEJ78c6cVpaXsQxP3fA6D0mKVBGMs",
-        'ws_local': "ws://3.115.81.7:8546",
+        'ipc': "/data/ethereum/execution/data/geth.ipc",
+        'http_local': "http://127.0.0.1:8545",
+        'http': "https://eth-mainnet.g.alchemy.com/v2/-rVE6Yp-pyFoYbe7wzM70zDUvN_Vlwkb",
+        'http1': "https://eth-mainnet.g.alchemy.com/v2/1vSGEJ78c6cVpaXsQxP3fA6D0mKVBGMs",
+        'http2': "https://eth-mainnet.g.alchemy.com/v2/hAtPgPTh1OhcpfjZq9mWz08ib4Zf_lOM",
+        'ws': "wss://eth-mainnet.g.alchemy.com/v2/1vSGEJ78c6cVpaXsQxP3fA6D0mKVBGMs",
+        'ws_local': "ws://127.0.0.1:8546",
         'light': {
-            'url': "ws://localhost:51301",  # "ws://18.198.151.1:51315",
+            'url': "ws://localhost:51314",
             'auth': "085da4b6a041efcef1ef681e5c9c"
         },
-        "block_interval": 12
+        "block_interval": 12,
+        "expected_delay": 1
     },
     'Polygon': {
         'ipc': "/data/matic/.bor/data/bor.ipc",
@@ -52,7 +48,8 @@ CONNECTION = {
             'url': "ws://localhost:51301",
             'auth': "085da4b6a041efcef1ef681e5c9c"
         },
-        "block_interval": 2
+        "block_interval": 2,
+        "expected_delay": 2
     },
     'BSC': {
         'chain_id': 56,
@@ -70,18 +67,20 @@ CONNECTION = {
             'url': "ws://localhost:51316",
             'auth': "085da4b6a041efcef1ef681e5c9c"
         },
-        "block_interval": 3
+        "block_interval": 3,
+        "expected_delay": 1
     }
 }
 INTVL = CONNECTION[NETWORK]['block_interval']
 URL = CONNECTION[NETWORK]
+SIG_DELAY_MAX = CONNECTION[NETWORK]["expected_delay"]  # examined by experiment
 
 COMPOUND = {
     'Ethereum': {
-        'v3': {
+        'v2': {
             'init_block_number': 7710671,
             'comet': "0x3d9819210A31b4961b30EF54bE2aeD79B9c9Cd3B",
-            # 'price_oracle': "",
+            'price_oracle': "0x50ce56A3239671Ab62f185704Caedf626352741e",
             'base_currency': "USD",
             'signals': ['aggregator'],
             'log_file': {
@@ -91,7 +90,8 @@ COMPOUND = {
             'ctoken_congis_file': "users/ctoken_configs_ethereum_compound_v3.json",
             'comet_configs_file': "users/comet_configs_ethereum_compound_v3.json",
             'users_file': "users/users_ethereum_compound_v3.json",
-            'users_file_status': 1  # 1 for continue; 0 for init from template
+            'users_file_status': 1,  # 1 for continue; 0 for init from template
+            'contract': ""
         }
     },
     # polygon: https://docs.aave.com/developers/v/2.0/deployed-contracts/matic-polygon-market
@@ -103,7 +103,7 @@ COMPOUND = {
             'health_factor_threshold': 1,
             'comet': "0xfD36E2c2a6789Db23113685031d7F16329158384",
             'vai': "0x004065D34C6b18cE4370ced1CeBDE94865DbFAFE",
-            # 'price_oracle': "",
+            'price_oracle': "0x7FabdD617200C9CB4dcf3dd2C41273e60552068A",
             'base_currency': "USD",
             'signals': ['aggregator'],
             'log_file': {
@@ -122,7 +122,7 @@ P_ALIAS = COMPOUND[NETWORK][SELECTOR]
 
 SIGNAL_FILTER_LIST = {
     'Ethereum': {
-        'v3': {
+        'v2': {
             'aggregator': []
         }
     },
@@ -136,7 +136,7 @@ S_ALIAS = SIGNAL_FILTER_LIST[NETWORK][SELECTOR]['aggregator']
 
 SIGNAL_TOKEN_DICT = {
     'Ethereum': {
-        'v3': {}
+        'v2': {}
     },
     'BSC': {
         'venus': {}
@@ -144,7 +144,18 @@ SIGNAL_TOKEN_DICT = {
 }
 ST_ALIAS = SIGNAL_TOKEN_DICT[NETWORK][SELECTOR]
 
-# updated on Mar 24, 2023
+BNB48 = [
+    '0x72b61c6014342d914470eC7aC2975bE345796c2b',
+    '0xa6f79B60359f141df90A0C745125B131cAAfFD12',
+    '0x0BAC492386862aD3dF4B666Bc096b0505BB694Da',
+    '0xD1d6bF74282782B0b3eb1413c901D6eCF02e8e28',
+    '0xb218C5D6aF1F979aC42BC68d98A5A0D796C6aB01',
+    '0x4396e28197653d0C244D95f8C1E57da902A72b4e',
+    '0x9bB832254BAf4E8B4cc26bD2B52B31389B56E98B',
+    '0x9F8cCdaFCc39F3c7D6EBf637c9151673CBc36b88'
+]
+
+# Test/Debug only: updated on Mar 24, 2023
 RESERVES_ALL = {
     "Ethereum": [
         "0x6C8c6b02E7b2BE14d4fA6022Dfd6d75921D90E4E",
@@ -199,6 +210,14 @@ RESERVES_ALL = {
     ]
 }
 RESERVES = RESERVES_ALL[NETWORK]
+
+# Test/Debug only: updated on May 28, 2023
+AGGR_CTOKEN_MAPS = {
+    "Ethereum": {'0x98e3f1be8e0609ac8a7681f23e15b696f8e8204d': '0x6C8c6b02E7b2BE14d4fA6022Dfd6d75921D90E4E', '0x478238a1c8b862498c74d0647329aef9ea6819ed': '0x5d3a536E4D6DbD6114cc1Ead35777bAB948E3643', '0xe62b71cf983019bff55bc83b48601ce8419650cc': '0x4Ddc2D193948926D02f9B1fE9e1daa0718270ED5', '0x3536295940d13156190a081a318579b5bc8b8aa4': '0x158079Ee67Fce2f58472A96584A73C7Ab9AC95c1', '0xdbe1941bfbe4410d6865b9b7078e0b49af144d2d': '0xccF4429DB6322D5C611ee964527D42E5d685DD6a', '0x4dde220ff2690a350b0ea9404f35c8f3ad012584': '0xB3319f5D18Bc0D84dD1b4825Dcde5d5f7266d407', '0x373bce97bec13bfa8a5f07cc578ec2d77f80c589': '0x35A18000230DA775CAc24873d00Ff85BccdeD550', '0x64d2e1f01a19762ddee27b1062cc092b66ff9652': '0x70e36f6BF80a52b3B46b3aF8e106CC0ed743E8e4', '0x20807cf61ad17c31837776fa39847a2fa1839e81': '0xFAce851a4921ce59e912d19329929CE6da6EB0c7', '0x71febc2f741f113af322e1b576ef005a4424574f': '0x95b4eF2869eBD94BEb4eEE400a99824BF5DC325b', '0x3cf055335b521863a62fb4374972560e3e55a193': '0x4B0181102A0112A2ef11AbEE5563bb4a3176c9d7', '0x8116b273cd75d79c382afacc706659ded5e0a59d': '0xe65cdB6479BaC1e22340E4E755fAE7E509EcD06c', '0xcac109af977ac94929a5dd37ed8af763bad78151': '0x80a2AE356fc9ef4305676f7a3E2Ed04e12C33946', '0xa998f62719e4a3cdc3ee70f4809c9200b58818e3': '0x7713DD9Ca933848F6819F38B8352D9A15EA73F67'},
+    "BSC": {}
+}
+AGGR_CTOKEN_MAP = AGGR_CTOKEN_MAPS[NETWORK]
+
 
 # currently unused
 '''

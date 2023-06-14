@@ -1,13 +1,10 @@
 import asyncio
 import time
 import os
-import io
 import timeit
-import threading
 import queue
 import multiprocessing
 import traceback
-import uuid
 import secrets
 import cProfile
 import pstats
@@ -29,22 +26,25 @@ from bxcommon.utils import convert
 from bxcommon.messages.eth.serializers.transaction import Transaction, DynamicFeeTransaction
 
 from liquidations import Web3LiqListening, LiquidationCall, gen_liquidation_filter
-from transaction import AccCompound, create_type0_tx, create_type2_tx, sign_sending_tx_to_tasks, send_tx_task, start_new_subscribe, init_accounts, create_self_transfer
-from bnb48 import Bnb48
-from utils import WSconnect, FakePool, polling_full, subscribe_to_node, subscribe_tx_light, subscribe_event_light
-from types_liq import LogReceiptLight, converter
-from configs.config import CONNECTION, NETWORK, P_ALIAS, LIQUDATION_LOG_LEVEL, EXP_SCALE, ADDRESS_ZERO, INTVL
-from configs.protocol import Web3CompoundVenues, complete_ctokens_configs_info, complete_ctokens_risks, query_exchange_rate
+from tx import sign_sending_tx_to_tasks, start_new_subscribe, init_accounts
+from utils import WSconnect, FakePool, polling_full, subscribe_to_node, subscribe_tx_light, subscribe_event_light, subscribe_event_full, subscribe_header_full
+from types_light import LogReceiptLight, converter, converter_full
+
+from configs.config import CONNECTION, NETWORK, P_ALIAS, LIQUDATION_LOG_LEVEL, EXP_SCALE, SIG_DELAY_MAX, INTVL
+from configs.protocol import Web3CompoundVenues, Web3CompoundV3, complete_ctokens_configs_info, complete_ctokens_risks, query_exchange_rate
 from configs.users import UserStates, States, HighProfitSates, HealthFactor, gen_states_filter, reload_states, sync_states, reload_and_extend_states
 from configs.comet import CometConfigs, gen_comet_filter, init_comet_configs
 from configs.tokens import CompReserve, CtokenInfos
-from configs.signals import init_signals, gen_signals_filter, complete_ctokens_price_info, price_scale, price_scale_inverse
-from configs.block import init_block_infos
-from configs.router import init_router_pools, gen_pool_key, Pool, RouterV2, ABIUniV3, ABIUniV2
+from configs.signals import init_signals, gen_signals_filter, complete_ctokens_price_info
+from configs.block import BlockInfos, init_block_infos
+from configs.router import init_router_pools, gen_new_routs, Routs, Pool, SwapV2, SwapV3, ABIUniV3, ABIUniV2
 from configs.vai import VaiState
 
+from transaction.send import WsSender, BnB48Sender, FlashSender, SendType, init_send_type
+from transaction.account import AccCompound
+
 LOG_DIRECTORY = "./"  # "/data/fydeng/"
-DESIRED_PROFIT_SCALE = 7 * EXP_SCALE  # in USD
+DESIRED_PROFIT_SCALE = 10 * EXP_SCALE  # in USD
 HF_THRESHOLD = 1
 
 
@@ -80,11 +80,14 @@ def on_message(message: Dict):
     if 'params' in message and 'result' in message['params']:
         result = message['params']['result']
 
+        validator = result['miner']
         block_number = int(result['number'], 16)
         block_timestamp = int(result['timestamp'], 16)
-        base_fee = 0
-        # todo: base_fee = int(result['baseFeePerGas'], 16)
-
+        base_fee = result['baseFeePerGas']
+        if base_fee == "None":
+            base_fee = 0
+        else:
+            base_fee = int(base_fee, 16)
         gas_price = w3_liq.w3.eth.gas_price
 
         # task 1: Update the local block number, timestamp, and base fee
@@ -105,23 +108,8 @@ def on_message(message: Dict):
         for acc in accounts:
             acc.nonce = w3_liq.w3.eth.get_transaction_count(acc.get_address())
 
-
-async def get_chain_infos_full():
-    counter = 0
-    json_rpc = {"id": 1, "jsonrpc": "2.0", "method": "eth_subscribe", "params": ["newHeads"]}
-    # reconnect when websocket is unstable
-    while True:
-        counter += 1
-        json_rpc['id'] = counter
-        json_rpc_str = json.dumps(json_rpc)
-        ws = WSconnect(CONNECTION[NETWORK]['ws_local'])
-
-        await subscribe_to_node(ws, json_rpc_str, on_message, logger, "full_newHeads_sub")
-
-        if counter >= 5:
-            raise Exception("subscribe new headers to full nodes too many times")
-        else:
-            logger.info("try to re-subscribe to full node")
+        # task 5: todo
+        sender.check_status(validator, block_number, block_timestamp)
 
 
 async def get_pending_callback(message):
@@ -174,7 +162,7 @@ async def get_pending_transactions_light(callback):
         if counter >= 3:
             raise Exception("connect to light nodes too many times")
         else:
-            logger.info("try to reconnect to light node")
+            logger.error("try to reconnect to light node")
 
 
 # execute when other asyncios are idel
@@ -182,12 +170,12 @@ async def liquidation_idel(callback):
     prev_block = 0
     while True:
         start = timeit.default_timer()
-        logger.debug("liquidation idel in control")
+        # logger.debug("liquidation idel in control")
         try:
             prev_block = await callback(prev_block)
             
             stop = timeit.default_timer()
-            logger.debug(f'liquidation idel out of control: {{"total_time": {stop-start}, "height": {prev_block}}}')
+            # logger.debug(f'liquidation idel out of control: {{"total_time": {stop-start}, "height": {prev_block}}}')
             await asyncio.sleep(0.2)
 
         except Exception as e:
@@ -281,8 +269,8 @@ async def liquidation_idle_callback(prev_block):
         users_with_args = gen_users_with_args(users)
         results = execution_select(signal_calculate_health_factor, "hf", users_with_args, args=(states.ctokens, comet))
 
-        coroutines = signal_simulate_health_factor(results, states.ctokens, comet, block_infos.block_num, routers.pools, accounts, None, logger)
-        await send_transactions(ws_main, coroutines)
+        coroutines = signal_simulate_health_factor(results, states.ctokens, comet, block_infos, routers.pools, routers.swap_simulation, accounts, None, send_type, logger)
+        await sender.send_transactions(coroutines, send_expire(block_infos.block_num), send_callback)
         write_health_factor(results)
         print_health_factor(results)
         return prev_block
@@ -297,12 +285,10 @@ async def liquidation_idle_callback(prev_block):
 
         if signal_recv.get("recv_height", 0) == block_num:
             sig = signal_recv
-            is_sig = True
         else:
             sig = None
-            is_sig = False
-        coroutines = signal_simulate_health_factor(results, states.ctokens, comet, block_infos.block_num, routers.pools, accounts, sig, logger)
-        await send_transactions(ws_main, coroutines, is_sig=is_sig)
+        coroutines = signal_simulate_health_factor(results, states.ctokens, comet, block_infos, routers.pools, routers.swap_simulation, accounts, sig, send_type, logger)
+        await sender.send_transactions(coroutines, send_expire(block_infos.block_num), send_callback)
         write_health_factor(results)
         print_health_factor(results)
         return prev_block
@@ -325,7 +311,7 @@ async def liquidation_idle_callback(prev_block):
     if switch == 1:
         users = states.get_users_sampling(index, 10)
         users_trim = users_trimming_wrap(users, int(time.time()), is_signal=False)
-        logger.info(f"calculate sample users start at {block_num} + 1, length {len(users_trim)}")
+        logger.info(f"calculate sample users start at {block_num} + {SIG_DELAY_MAX}, length {len(users_trim)}")
 
         users_trim_with_args = gen_users_with_args(users_trim)
         args = (states.ctokens, comet)
@@ -341,6 +327,11 @@ async def liquidation_idle_callback(prev_block):
         logger.info(f'calculate pre users filtering: {{"tokens": {tokens_addr}, "length": {len(users_trim)}}}')
     return block_num
 
+
+def users_subscribe_callback_full(message):
+    if 'params' in message and 'result' in message['params']:
+        users_subscribe_callback(converter_full(message['params']['result']))
+ 
 
 def users_subscribe_callback(response: LogReceiptLight):
     block_num = response['blockNumber']
@@ -365,6 +356,11 @@ def users_subscribe_callback(response: LogReceiptLight):
     states.block_hash = block_hash
     logger.info(f'users in local cache updated: {{"users": {users}, "block_num": {block_num}}}')
     users_lst = list(users.keys())
+
+    # update users getAssetsIn, should before recalculating users hf 
+    # todo: the reason why update getAssetsIn when the balacne of user changed? 
+    for usr in users_lst:
+        reload_and_extend_states(w3_liq, states, usr)
 
     # recalculate users hf after updating
     users_with_args = gen_users_with_args(users_lst)
@@ -407,11 +403,6 @@ def users_subscribe_callback(response: LogReceiptLight):
         end = timeit.default_timer()
         logger.info(f'user add to pre filtered: {{"users": {new_added}, "time":{end-start}}}')
 
-    # update users getAssetsIn
-    # todo: the reason why update getAssetsIn when the balacne of user changed? 
-    for usr in users_lst:
-        reload_and_extend_states(w3_liq, states, usr)
-
     # plug in
     if states.plug_in is None:
         return
@@ -443,6 +434,11 @@ def comet_subscribe_callback(response: LogReceiptLight):
     logger.info(f'comet in local cache updated: {{"block_num": {block_num}}}')
 
 
+def signals_subscribe_callback_full(message):
+    if 'params' in message and 'result' in message['params']:
+        signals_subscribe_callback(converter_full(message['params']['result']))
+
+
 def signals_subscribe_callback(response: LogReceiptLight):
     logs = converter(response)
     for log in logs:
@@ -451,9 +447,17 @@ def signals_subscribe_callback(response: LogReceiptLight):
         aggr_infos = signals.signal_token_map[contract_addr.lower()]
         for token_info in aggr_infos:
             ctoken_addr = token_info.token
-            decimals = states.ctokens[ctoken_addr].configs.underlying_decimals
-            feed_decimals = token_info.price_decimals
-            states.ctokens[ctoken_addr].price.comfirm(log, decimals, feed_decimals)
+            # for BSC Venus
+            # decimals = states.ctokens[ctoken_addr].configs.underlying_decimals  
+            # feed_decimals = token_info.price_decimals
+            # args = (decimals, feed_decimals)
+
+            # for ETH V2
+            multiplier = states.ctokens[ctoken_addr].configs.reporter_multiplier 
+            base_units = states.ctokens[ctoken_addr].configs.base_units
+            args = (base_units, multiplier)
+
+            states.ctokens[ctoken_addr].price.confirm(log, signals.price_scale, args)
             logger.info(f'signals price confirmed: {{"ctoken": "{ctoken_addr}", "price": {states.ctokens[ctoken_addr].price.__dict__}}}')
 
 
@@ -467,6 +471,11 @@ async def comet_configs_polling_full(callback):
     filt = gen_comet_filter()
     logger.debug("the comet configs filter is {}".format(filt))
     polling_full(w3_liq, filt, callback)
+
+
+def liquidations_subscribe_callback_full(message):
+    if 'params' in message and 'result' in message['params']:
+        liquidations_subscribe_callback(converter_full(message['params']['result']))
 
 
 def liquidations_subscribe_callback(response: LogReceiptLight):
@@ -508,12 +517,34 @@ def process_receipts(receipts: list):
             logger.info(f'sending disabled')
 
 
+def bnb48_callback(error_code, msg, mev_gas_price, txs, bnb48_expire_timestamp):
+    if error_code == 0:
+        logger.info(f'bnb48 send success: {{"message": "{msg}", "code": {error_code}, "gas_price": {mev_gas_price}, "exp_timestamp": {bnb48_expire_timestamp}, "bundles": {txs}}}')
+    elif error_code in [-4804, -32000, -1]:
+        logger.error(f'bnb48 send error: {{"message": "{msg}", "code": {error_code}, "gas_price": {mev_gas_price}, "exp_timestamp": {bnb48_expire_timestamp}, "bundles": {txs}}}') 
+    else:
+        logger.error(f'bnb48 send fails: {{"message": "{msg}", "code": {error_code}, "gas_price": {mev_gas_price}, "exp_timestamp": {bnb48_expire_timestamp}, "bundles": {txs}}}')
+
+
+def bnb48_expire(block_num):
+   return block_infos.get_current_timestamp(block_num) + 6
+
+
+def flash_callback(error_code, err_msg, index):
+    if error_code == 0:
+        logger.debug(f"index '{index}', flashbot simulation successful.")
+    else:
+        logger.error(f"index '{index}', flashbot simulation error: {err_msg}")
+
+
+def flash_expire(block_num):
+   return block_num + SIG_DELAY_MAX
+
+
 async def tx_send_and_tracking_subscribe(callback, logger):
-    global ws_main
     async with connect(CONNECTION[NETWORK]['light']['url'],
                 extra_headers={'auth': CONNECTION[NETWORK]['light']['auth']}) as ws:
-        
-        ws_main = ws
+
         # 收交易回执与发交易的ws了解请用同一个
         try:
             s1 = start_new_subscribe(ws, callback, logger)
@@ -593,10 +624,19 @@ def mul_scalar_truncate(ratio, repay_amount):
 
 
 def mul_scalar_truncate_reverse(ratio, seize_amount):
-    return seize_amount * EXP_SCALE // ratio 
+    return seize_amount * EXP_SCALE // ratio
 
 
-def liquidation_simulation(reserves: Dict[str, CompReserve], ctk: Dict[str, CtokenInfos], com: CometConfigs, pools: Dict[str, Pool]):
+class LiqPair(object):
+    def __init__(self, profit: int, col_ctoken: str, debt_ctoken: str, seize_tokens: int, repay_amount: int) -> None:
+        self.profit = profit 
+        self.col_ctoken = col_ctoken
+        self.debt_ctoken = debt_ctoken
+        self.seize_tokens = seize_tokens
+        self.repay_amount = repay_amount
+
+
+def liquidation_simulation(reserves: Dict[str, CompReserve], ctk: Dict[str, CtokenInfos], com: CometConfigs) -> Dict[str, LiqPair]:
     debts = []
     for ctoken_addr, data in reserves.items():
         debt_balance = data.debt_amount
@@ -617,116 +657,142 @@ def liquidation_simulation(reserves: Dict[str, CompReserve], ctk: Dict[str, Ctok
         return [], []
 
     debts = sorted(debts, reverse=True)
-    target_debt = debts[0]
-    debt_ctoken = target_debt[1]
-    actual_repay_amount = target_debt[2]
-    debt_price = ctk[debt_ctoken].price.price_current
+    debt_normalize_max = debts[0][0]
+    liquidation_pair = {}
+    for target_debt in debts:
+        # target_debt = debts[0]
+        debt_ctoken = target_debt[1]
+        actual_repay_amount = target_debt[2]
+        debt_price = ctk[debt_ctoken].price.price_current
 
-    collaterals = []
-    for ctoken_addr, data in reserves.items():
-        
-        # todo: consider the router impact
-        token0 = ctk[ctoken_addr].configs.underlying
-        token1 = ctk[debt_ctoken].configs.underlying
-        debt_token_index = 1
+        if target_debt[0] < debt_normalize_max * 0.8:
+            continue 
 
-        key, zero_for_one = gen_pool_key(token0, token1)
-        if not zero_for_one:
-            debt_token_index = 0
+        collaterals = []
+        for ctoken_addr, data in reserves.items():
+            collateral_balance = data.col_amount
+            if collateral_balance > 0:
+                price = ctk[ctoken_addr].price.price_current
+                exchange_rate = ctk[ctoken_addr].risks.exchange_rate
+                numerator = com.liq_incentive * debt_price // EXP_SCALE
+                denominator = price * exchange_rate // EXP_SCALE
+                ratio = numerator * EXP_SCALE // denominator
+                seize_tokens = mul_scalar_truncate(ratio, actual_repay_amount)
 
-        pool = pools.get(key, None)
-        if pool is None:
-            continue
+                # different from onchain logic, we need to rejust the actual_repay_amount 
+                if collateral_balance < seize_tokens:
+                    seize_tokens = collateral_balance
+                    rejust_repay_amount = mul_scalar_truncate_reverse(ratio, seize_tokens) 
+                else:
+                    rejust_repay_amount = actual_repay_amount
 
-        collateral_balance = data.col_amount
-        if collateral_balance > 0:
-            price = ctk[ctoken_addr].price.price_current
-            exchange_rate = ctk[ctoken_addr].risks.exchange_rate
-            numerator = com.liq_incentive * debt_price // EXP_SCALE
-            denominator = price * exchange_rate // EXP_SCALE
-            ratio = numerator * EXP_SCALE // denominator
-            seize_tokens = mul_scalar_truncate(ratio, actual_repay_amount)
+                # introduced by Compound protocol
+                seize_tokens -= seize_tokens * ctk[ctoken_addr].risks.protocol_seized // EXP_SCALE
+                # todo: * treary_percent / com.liq_incentive # charged by venus liquidator.sol to treasury
+                
+                # refer to getHypotheticalAccountLiquidityInternal
+                profit_apprx = (seize_tokens * exchange_rate // EXP_SCALE * price - rejust_repay_amount * debt_price) // EXP_SCALE
 
-            # todo
-            # different from onchain logic, we need to rejust the actual_repay_amount 
-            if collateral_balance < seize_tokens:
-                seize_tokens = collateral_balance
-                rejust_repay_amount = mul_scalar_truncate_reverse(ratio, seize_tokens) 
-            else:
-                rejust_repay_amount = actual_repay_amount
+                collaterals.append(LiqPair(
+                    profit=profit_apprx,
+                    debt_ctoken=debt_ctoken,
+                    col_ctoken=ctoken_addr, 
+                    seize_tokens=seize_tokens, 
+                    repay_amount=rejust_repay_amount
+                ))
 
-            # todo: consider the router impact
-            if rejust_repay_amount > pool.liquidity[debt_token_index]:
+        if len(collaterals) != 0:
+            sorted_objects = sorted(collaterals, key=lambda x: x.profit, reverse=True)
+            liquidation_pair[debt_ctoken] = sorted_objects
+
+    return liquidation_pair
+
+
+def profit_simulation(ctk: Dict[str, CtokenInfos], liq_pairs: Dict[str, List[LiqPair]], pools: Dict[str, Pool], swap_func, depth=5):
+    max_profit = 0
+
+    target = None
+    for debt_ctoken, pairs in liq_pairs.items():
+        for pair in pairs:
+            col_ctoken = pair.col_ctoken
+
+            revenue_appr = pair.profit
+            if revenue_appr < DESIRED_PROFIT_SCALE:
                 continue
 
-            # refer to getHypotheticalAccountLiquidityInternal
-            # profit_apprx = (seize_tokens * exchange_rate // EXP_SCALE * price - rejust_repay_amount * debt_price) // EXP_SCALE
+            # todo: define tokenIn and tokenOut
+            token_in = ctk[col_ctoken].configs.underlying
+            token_out = ctk[debt_ctoken].configs.underlying
+            routs = gen_new_routs(token_in, token_out)
+            swap_tokens, paths = routs.find_routs(pair.repay_amount, pools, swap_func, depth)
+            if swap_tokens <=0 and len(paths) == 0:
+                continue
+            else:
+                routs.paths = paths
 
-            # uniswap v2 without fee consideration
-            x = pool.liquidity[debt_token_index] 
-            y = pool.liquidity[1-debt_token_index]
-            swap_tokens = y * rejust_repay_amount * 10000 // ((x - rejust_repay_amount) * 9975) + 1
-            profit_apprx = (seize_tokens * exchange_rate // EXP_SCALE - int(swap_tokens)) * price // EXP_SCALE 
+            # todo: how to evaluate the price of col_ctoken
+            price = ctk[col_ctoken].price.price_current
+            exchange_rate = ctk[col_ctoken].risks.exchange_rate
 
-            collaterals.append((profit_apprx, ctoken_addr, seize_tokens, rejust_repay_amount))
+            seize_tokens_ua = pair.seize_tokens * exchange_rate // EXP_SCALE
+            profit_actual = (seize_tokens_ua - int(swap_tokens)) * price // EXP_SCALE 
+            pair.profit = profit_actual
 
-    collaterals = sorted(collaterals, reverse=True)
-    return collaterals, target_debt
+            # routs_usdc = Routs(token_in, "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")  # todo: temp address
+            # swap_tokens_usdc, paths_usdc = routs_usdc.find_routs(seize_tokens_left, pools, swap_func, depth)
+            # pair.profit = profit_actual = swap_tokens_usdc 
 
+            if profit_actual > max_profit:
+                max_profit = profit_actual
+                target = [pair, routs]
 
-def liquidation_init(usr_addr: str, reserves: Dict[str, CompReserve], ctokens: Dict[str, CtokenInfos], comet: CometConfigs, pools: Dict[str, Pool]):
-    collaterals, debt = liquidation_simulation(reserves, ctokens, comet, pools)
-    if len(debt) == 0:
-        return "", [] 
-
-    if len(collaterals) == 0:
-        return "", [] 
-
-    to_addr = debt[1]
-    return to_addr, collaterals[0]
+    return target
 
 
 def generate_unique_id(length=16):
     return secrets.token_hex(length)
 
 
-def signal_simulate_health_factor(results: List[Tuple[str, HealthFactor, Dict]], ctk: Dict[str, CtokenInfos], comet: CometConfigs, block_num: int, pools: Dict[str, Pool], acc: List[AccCompound], sig_recv, logger):
+def signal_simulate_health_factor(results: List[Tuple[str, HealthFactor, Dict]], ctk: Dict[str, CtokenInfos], comet: CometConfigs, block_infos: BlockInfos, pools: Dict[str, Pool], swap_func, acc: List[AccCompound], sig_recv, send_type: SendType, logger):
     tasks = []
 
     for res in results:
         (usr, new_health_factor, reserves) = res
         if 1 > new_health_factor.value/HF_THRESHOLD > 0:
-            to_addr, collateral_infos = liquidation_init(usr, reserves, ctk, comet, pools)
-            if len(collateral_infos) == 0:
-                logger.debug(f'liquidation skipped: {{"user":"{usr}"}}')
+            liq_pairs = liquidation_simulation(reserves, ctk, comet)
+            if len(liq_pairs) == 0:
+                logger.debug(f'liquidation skipped: {{"user":"{usr}", "error":"no liquidation pairs"}}')
                 continue
 
-            revenue = collateral_infos[0]
-            # borrower, repay_amount, col_addr
-            liquidation_params = [usr, collateral_infos[3], collateral_infos[1]]
-            seized_amount = collateral_infos[2]
-            
+            # todo: remove?
+            key = next(iter(liq_pairs))
+            revenue_appr = liq_pairs[key][0].profit
+            if revenue_appr < DESIRED_PROFIT_SCALE:
+                logger.debug(f'liquidation skipped: {{"user":"{usr}", "error":"no sufficient profit"}}')
+                continue
+
+            pair_with_routs = profit_simulation(ctk, liq_pairs, pools, swap_func)
+            if pair_with_routs is None:
+                logger.debug(f'liquidation skipped: {{"user":"{usr}", "error":"no suitable routs"}}')
+                continue
+
             # index = uuid.uuid1().hex
             index = generate_unique_id()
-            if sig_recv is not None:
-                sig_hash = sig_recv['hash']
-            else:
-                sig_hash = ""
 
+            liq_pair: LiqPair = pair_with_routs[0]
+            routs: Routs = pair_with_routs[1] 
+
+            revenue = liq_pair.profit
             if revenue < DESIRED_PROFIT_SCALE:
-                logger.info(f'liquidation abandoned: {{"index":"{index}", "user":"{usr}", "revenue":{revenue/10**18}, "block_num":{block_num}, "params":{liquidation_params}, "to_addr": "{to_addr}", "gainedAmount": {seized_amount}, "signal":"{sig_hash}"}}')
+                to_addr = liq_pair.debt_ctoken
+                seized_amount = liq_pair.seize_tokens
+                liquidation_params = [usr, liq_pair.repay_amount, liq_pair.col_ctoken]
+                logger.info(f'liquidation abandoned: {{"index":"{index}", "user":"{usr}", "revenue":{revenue/10**18}, "routs":{routs.print_routs()}, "block_num":{block_infos.block_num}, "params":{liquidation_params}, "to_addr": "{to_addr}", "gainedAmount": {seized_amount}, "signal":{sig_recv}}}')
                 continue
 
-            if liquidation_params is not None:
-                logger.info(f'liquidation start: {{"index":"{index}", "user":"{usr}", "revenue":{revenue/10**18}, "block_num":{block_num}, "params":{liquidation_params}, "to_addr": "{to_addr}", "gainedAmount": {seized_amount}, "signal":"{sig_hash}"}}')
-
-                tasks += liquidation_start(index, ctk, pools, to_addr, liquidation_params, revenue, acc, sig_recv, logger)
+            tasks += liquidation_start(index, usr, ctk, block_infos, routs, liq_pair, acc, sig_recv, send_type, logger)
 
     return tasks
-
-
-def liquidation_start(index, ctk, pools, to_addr, params, revenue, acc, sig_recv, logger):
-    return liquidate_from_flash_loan(index, ctk, pools, to_addr, params, revenue, acc, sig_recv, logger)
 
 
 def free_user_liquidated(args):
@@ -770,129 +836,70 @@ def set_user_liquidated(index, args):
     users_to_liquidate[user][debt] = [debt_to_cover, index]
 
 
-def liquidate_from_flash_loan(index, ctk: Dict[str, CtokenInfos], pools: Dict[str, Pool], to_addr, params, revenue, acc, sig_recv, logger):
+def liquidation_start(index: int, usr: str, ctk: Dict[str, CtokenInfos], block_infos: BlockInfos, routs: Routs, liq_pair: LiqPair, acc: List[AccCompound], sig_recv: Dict, send_type: SendType, logger):
+    revenue = liq_pair.profit
+    to_addr = liq_pair.debt_ctoken
+    seized_amount = liq_pair.seize_tokens
+    params = [usr, liq_pair.repay_amount, liq_pair.col_ctoken]    
+    logger.info(f'liquidation start: {{"index":"{index}", "user":"{usr}", "revenue":{revenue/10**18}, "routs":{routs.print_routs()}, "block_num":{block_infos.block_num}, "params":{params}, "to_addr": "{to_addr}", "gainedAmount": {seized_amount}, "signal":{sig_recv}}}')
+
     # todo: liquidated when an invalid signal is given
     res, prev_index = is_user_liquidated([params[0], to_addr, params[1]])
     if res:
         logger.debug(f'user is liquidated: {{"index":"{prev_index}", "revenue": {revenue}, "params":{params}}}')    
         return []
 
-    debt_ctoken = to_addr
-    col_ctoken = params[2]
-    token0 = ctk[col_ctoken].configs.underlying
-    token1 = ctk[debt_ctoken].configs.underlying
-    debt_token_index = 1
-
-    # if token0 is collateral, zero for one is align with is_token0
-    key, zero_for_one = gen_pool_key(token0, token1)
-    if not zero_for_one:
-        debt_token_index = 0
-        temp = token1
-        token1 = token0
-        token0 = temp
-
-    pool = pools.get(key, None)
-    if pool is None:
-        logger.debug(f'user debt cannot be swapped: {{"index":"{index}", "pair":{[token0, token1]}, "revenue": {revenue}, "params":{params}}}')    
-        return []
-    
-    fee = pool.fee
-    pool_addr = pool.pool_addr
-
-    repay_amount = params[1]
-    if repay_amount > pool.liquidity[debt_token_index]:
-        logger.debug(f'invalid liquidity:{{"index":"{index}", "pool": {pool.__dict__}, "repay_amount": {repay_amount}}}')
-        return []
-
     # continue listening to user, if he can be continues liquidated
     # todo: move the continues liquidation to smart contract?
     # write_continues_users_queue_v2(params[2], current_time)
 
-    # todo: base_fee = block_infos.base_fee
-    base_fee = 0
-    if NETWORK == "Polygon":
-        estimate_gas = 500000
-        if sig_recv is not None:
-            if sig_recv.get('tx_type', "") == '0x0':
-                gas_fee = sig_recv['gas_price']
-                tx = create_type0_tx(gas_fee, gas=1200000)
-            else:
-                pass
-            logger.debug(f'signal founded: {{"index":"{index}", "signal_info":{sig_recv}}}')
-        else:
-            mev = 0 # todo: query_priotity_fee(current_time)
-            gas_fee = base_fee + mev
-            tx = create_type2_tx(base_fee, mev, gas=estimate_gas)
-            logger.debug(f'signal already onchain: {{"index":"{index}"}}')
+    tx, gas_fee = send_type.create_liq_transaction(revenue, block_infos, sig_recv)
 
-        try:
-            matic_usd_aggr = ""
-            res = signals.get_tokens_from_aggr(matic_usd_aggr)
-            ctoken_addr = res[0][0].token
-            price = states.ctokens[ctoken_addr].price.price_current / 10**18  # todo
-        except:
-            price = 0
-        cost = gas_fee / 10**18 * estimate_gas
-        cost_in_protocol_base = cost * price
-    elif NETWORK == "BSC":
-        estimate_gas = 1100000
-        # the balance of user should larger than gas_price * gas_limit. e.g. 5000000000 * 2500000 / 10**18 = 0.0125 
-        gas_limit = 3000000
-        if sig_recv is not None:
-            gas_fee = sig_recv['gas_price']
-            # logger.debug(f'signal founded: {{"index":"{index}", "signal_info":{sig_recv}}}')
-        else:
-            mev = 3000000000 # todo: query_priotity_fee(current_time)
-            gas_fee = base_fee + mev
-            # logger.debug(f'signal already onchain: {{"index":"{index}"}}')
+    if send_type.price_token is not None:
+        ctoken_addr = send_type.price_token
+        price = ctk[ctoken_addr].price.price_current
+        price_decimals = send_type.price_decimals
 
-        tx = create_type0_tx(gas_fee, gas=gas_limit)
+        # for BSC Venus
+        # token_decimals = ctk[ctoken_addr].configs.underlying_decimals 
+        # price = signals.price_scale_inverse(price, token_decimals, price_decimals) / 10**price_decimals * EXP_SCALE
 
-        '''
-        try:
-            bnb_usd_aggr = "0x137924D7C36816E0DcAF016eB617Cc2C92C05782"
-            res, _ = signals.get_tokens_from_aggr(bnb_usd_aggr)
-            ctoken_addr = res[0].token
-            token_decimals = states.ctokens[ctoken_addr].configs.underlying_decimals
-            price = states.ctokens[ctoken_addr].price.price_current
-            price_decimals = res[0].price_decimals
-            price = price_scale_inverse(price, token_decimals, price_decimals) / 10**price_decimals * EXP_SCALE
-        except:
-            price = 0
-        cost = gas_fee / 10**18 * estimate_gas
-        cost_in_protocol_base = cost * price
-        '''
-        cost_in_protocol_base = 0.007 * 330 * gas_fee / 5000000000 * 10**18
-    elif NETWORK == "Ethereum":
-        estimate_gas = 1500000
-        mev = 0.9 * (revenue / estimate_gas * 10**18  - base_fee)         
-        gas_fee = base_fee + mev
-        tx = create_type2_tx(base_fee, mev, gas=estimate_gas)
-        cost = gas_fee / 10**18 * estimate_gas
-        cost_in_protocol_base = cost 
+        multiplier = ctk[ctoken_addr].configs.reporter_multiplier 
+        base_units = ctk[ctoken_addr].configs.base_units
+        price = signals.price_scale_inverse(price, base_units, multiplier) / 10**price_decimals * EXP_SCALE
+    else:
+        price = 1
 
+    cost = gas_fee / 10**18 * send_type.estimate_gas
+    cost_in_protocol_base = cost * price
     profit = revenue - cost_in_protocol_base 
     if profit < 0:
-        logger.info(f'gas fee larger than revenue: {{"index":"{index}", "gas": {gas_fee}, "price":{price}, "revenue":{revenue}}}')
+        logger.info(f'gas fee larger than revenue: {{"index":"{index}", "gas": {cost_in_protocol_base}, "revenue":{revenue}}}')
         return []
 
-    # varied based on the contract deployed
-    intput = "0x18de0524"
-    intput += hex(zero_for_one)[2:].zfill(64)  # zero_for_one 
-    intput += hex(params[1])[2:].zfill(64)     # repayAmount 
-    intput += pool_addr.lower()[2:].zfill(64)  # pair
-    intput += token0.lower()[2:].zfill(64)     # token0
-    intput += token1.lower()[2:].zfill(64)     # token1
-    intput += params[0].lower()[2:].zfill(64)  # borrower
-    intput += to_addr.lower()[2:].zfill(64)    # debt_ctoken
-    intput += params[2].lower()[2:].zfill(64)  # col_ctoken
+    # todo: change to router object
+    if len(routs.paths) == 0:
+        intput = "0x"
+    else:
+        zero_for_one = 0
+        pool = routs.paths[0]
+        pool_addr = pool.pool_addr
+        token0 = pool.pair[0]
+        token1 = pool.pair[1]
+
+        # varied based on the contract deployed
+        intput = "0x18de0524"
+        intput += str(zero_for_one).zfill(64)  # zero_for_one 
+        intput += hex(params[1])[2:].zfill(64)     # repayAmount 
+        intput += pool_addr.lower()[2:].zfill(64)  # pair
+        intput += token0.lower()[2:].zfill(64)     # token0
+        intput += token1.lower()[2:].zfill(64)     # token1
+        intput += params[0].lower()[2:].zfill(64)  # borrower
+        intput += to_addr.lower()[2:].zfill(64)    # debt_ctoken
+        intput += params[2].lower()[2:].zfill(64)  # col_ctoken
 
     tx['data'] = bytes.fromhex(intput[2:])
     tx['to'] = bytes.fromhex(P_ALIAS['contract'][2:])
-
-    # todo: move to other place
-    # if send_lock:
-    #     return []
     
     set_user_liquidated(index, [params[0], to_addr, params[1]])
     return sign_sending_tx_to_tasks(index, tx, profit, acc)
@@ -1064,7 +1071,8 @@ async def pt(message):
 
     # signal verify and parsing
     try:
-        res, aggr = signals.tx_filter_and_parsing(message, block_infos.gas_price)
+        contract_addr, price = signals.tx_filter_and_parsing(message, block_infos.gas_price)
+        res, aggr = signals.no_name(contract_addr, price)
         logger.info(f'source has new prices update: {{"num": {len(res)}, "infos":{res}, "hash":"{message["hash"]}"}}')
     except Exception as e:
         logger.info(f'source message invalid: {{"error":{e}, "msg":{message}}}')
@@ -1097,8 +1105,10 @@ async def pt(message):
     for r in res:
         token_addr = r[0] # Web3.toChecksumAddress(r[0])
         price = r[1]
-        feed_decimals = r[2]
-        decimals = states.ctokens[token_addr].configs.underlying_decimals
+
+        # for BSC Venus
+        # feed_decimals = r[2]
+        # decimals_ua = states.ctokens[token_addr].configs.underlying_decimals  
 
         # take venus protocol as an example
         # there are two types of price source, details in https://bscscan.com/address/0x7fabdd617200c9cb4dcf3dd2c41273e60552068a#code
@@ -1107,7 +1117,12 @@ async def pt(message):
         # for liquidation only vTokens are considered, thus "VAI" and "XVS" is ignored
         # Although "vBNB" are not scaled (so do "VAI" and  "XVS"), there is no different if it is passed to the price_scale function
         # currently no vToken are setted manually (tyep 2), see details in signals.py -> prices_setted_manually_test()
-        new_price = int(price_scale(price, decimals, feed_decimals))
+        # new_price = int(signals.price_scale(price, decimals_ua, feed_decimals))
+
+        # for ETH V2 
+        multiplier = states.ctokens[token_addr].configs.reporter_multiplier
+        base_units = states.ctokens[token_addr].configs.base_units
+        new_price = int(signals.price_scale(price, base_units, multiplier))
 
         old_price = states.ctokens[token_addr].price.price_current
         new_delta = new_price / old_price - 1
@@ -1117,8 +1132,11 @@ async def pt(message):
         states.ctokens[token_addr].price.update(new_price, int(time.time()))
         
         tokens_addr.append(token_addr)
-        # logger.debug(f'price update locally: {{"token":"{token_addr}", "price": {states.ctokens[token_addr].price.__dict__}}}')
-    # logger.debug(f'price delta: {{"delta_max": {delta_max}}}')
+        logger.debug(f'price update locally: {{"token":"{token_addr}", "price": {states.ctokens[token_addr].price.__dict__}}}')
+    
+    # debug only:
+    if abs(delta_max) > 0.1:
+        logger.debug(f'price delta: {{"delta_max": {delta_max}}}')
 
     # filter users list based on token address
     # s = timeit.default_timer()
@@ -1129,7 +1147,7 @@ async def pt(message):
         return 0
 
     # index = find_closet_hf_users_index(users, delta_max)
-    index = 10  # if len(users) < index, will not cause error
+    index = 20  # if len(users) < index, will not cause error
     sorted_users = users[0:index]
     # e = timeit.default_timer()
     # logger.debug(f'users filtered: {{"process": {len(sorted_users)}, "time": {e-s}}}') 
@@ -1142,8 +1160,8 @@ async def pt(message):
     # s = timeit.default_timer()
     sorted_users_with_args = gen_users_with_args(sorted_users)
     results = execution_select(signal_calculate_health_factor, "hf", sorted_users_with_args, args=(states.ctokens, comet,), is_sig=True)
-    coroutines = execution_select(signal_simulate_health_factor, "liq", results, args=(states.ctokens, comet, block_infos.block_num, routers.pools, accounts, signal_recv, logger,), is_sig=True)
-    await send_transactions(ws_main, coroutines, is_sig=True)
+    coroutines = execution_select(signal_simulate_health_factor, "liq", results, args=(states.ctokens, comet, block_infos, routers.pools, routers.swap_simulation, accounts, signal_recv, send_type, logger,), is_sig=True)
+    await sender.send_transactions(coroutines, send_expire(block_infos.block_num), send_callback, signal_recv)
     e = timeit.default_timer()
     sig = e-start
     logger.debug(f'hf liquidation finish: {{"process": {len(coroutines)}, "time": {e-start}}}')
@@ -1181,74 +1199,24 @@ def get_reserves_value(token_addr, amount, is_col=False):
 
 async def main():
     tasks = [
-        asyncio.create_task(subscribe_event_light(states.gen_states_filter(reserves_init), users_subscribe_callback, logger, "light_users_sub")),
+        # asyncio.create_task(subscribe_event_light(states.gen_states_filter(reserves_init), users_subscribe_callback, logger, "light_users_sub")),
+        asyncio.create_task(subscribe_event_full(states.gen_states_filter(reserves_init), users_subscribe_callback_full, logger, "full_users_sub")),
         asyncio.create_task(subscribe_event_light(gen_comet_filter(), comet_subscribe_callback, logger, "light_comet_sub")),
-        asyncio.create_task(subscribe_event_light(gen_signals_filter(signals), signals_subscribe_callback, logger, "light_price_sub")),
-        asyncio.create_task(get_chain_infos_full()),
+        # asyncio.create_task(subscribe_event_light(gen_signals_filter(signals), signals_subscribe_callback, logger, "light_price_sub")),
+        asyncio.create_task(subscribe_event_full(gen_signals_filter(signals), signals_subscribe_callback_full, logger, "full_price_sub")),
+        # asyncio.create_task(subscribe_event_light(gen_liquidation_filter(reserves_init), liquidations_subscribe_callback, logger, "light_liquidations_sub")),
+        asyncio.create_task(subscribe_event_full(gen_liquidation_filter(reserves_init), liquidations_subscribe_callback_full, logger, "full_liquidations_sub")),
+
+        asyncio.create_task(subscribe_header_full(on_message, logger)),
+
         # asyncio.create_task(subscribe_tx_light(signals.signals_event_filter_light, get_pending_callback, logger, "light_pendSig_sub")),
         asyncio.create_task(get_pending_transactions_light(pt_prof_wrap)),
+
         asyncio.create_task(liquidation_idel(liquidation_idle_callback)),
-        asyncio.create_task(subscribe_event_light(gen_liquidation_filter(reserves_init), liquidations_subscribe_callback, logger, "light_liquidations_sub")),
-        # asyncio.create_task(subscribe_event_light(gen_events_filter([P_ALIAS['vai']], event_vai_repay.gen_topics()), vai_repay_subscribe_callback, logger, "light_event_vai_sub")),
         asyncio.create_task(tx_send_and_tracking_subscribe(process_receipts, logger))
     ]
 
     await asyncio.gather(*tasks)
-
-
-async def send_transactions_ws(ws, results):
-    tasks = []
-    for res in results:
-        signed_tx_raw = res[1]
-        tasks.append(asyncio.create_task(send_tx_task(signed_tx_raw, ws)))
-
-    await asyncio.gather(*tasks)
-
-
-async def send_transactions(ws, results, is_sig=False):
-    global send_lock
-    if len(results) == 0:
-        return
-
-    if is_sig:
-        txs = [
-            signal_recv['raw_tx']
-        ]
-    else:
-        txs = []
-
-    dedup = {}
-    profits = 0
-    for res in results:
-        index = res[0]
-        signed_tx_raw = res[1]
-        profit = res[2]
-
-        txs.append(signed_tx_raw.hex())
-
-        if dedup.get(index, None) is None:
-            dedup[index] = 1
-            profits += profit
-    
-    bnb_cost = 0.8 * profits / 320
-    if bnb_cost > 0.06:
-       bnb_cost = 0.06 
-    
-    mev_gas_price = bnb_cost / 21000
-    if mev_gas_price < bnb_gas_price or send_lock:
-        logger.info(f'bnb48 send skipped: {{"gas_price": {mev_gas_price}, "bundles": {txs}, "is_lock":{send_lock}}}')
-    else:
-        txs = [create_self_transfer(mev_gas_price, bnb48.acc)] + txs
-        error_code = bnb48.send_puissant(txs, int(time.time())+4)
-        if error_code == 0:
-            logger.info(f'bnb48 send success: {{"gas_price": {mev_gas_price}, "bundles": {txs}, "signals":{signal_recv}}}')
-        elif error_code in [-4804, -32000]:
-            logger.error(f'bnb48 send error: {{"code": {error_code}, "gas_price": {mev_gas_price}, "bundles": {txs}}}') 
-        else:
-            send_lock = True
-            logger.error(f'bnb48 send fails: {{"code": {error_code}, "gas_price": {mev_gas_price}, "bundles": {txs}}}')
-
-    await asyncio.sleep(0.001)
 
 
 def print_send_transactions(results):
@@ -1263,8 +1231,10 @@ async def pre_set(results):
     async with connect(CONNECTION[NETWORK]['light']['url'],
         extra_headers={'auth': CONNECTION[NETWORK]['light']['auth']}) as ws:
 
-        coroutines = execution_select(signal_simulate_health_factor, "liq", results, (states.ctokens, comet, block_infos.block_num, routers.pools, accounts, None, logger,))
-        await send_transactions_ws(ws, coroutines)
+        coroutines = execution_select(signal_simulate_health_factor, "liq", results, (states.ctokens, comet, block_infos, routers.pools, routers.swap_simulation, accounts, None, send_type, logger,))
+        
+        sender = WsSender(ws)
+        await sender.send_transactions(coroutines)
 
 
 def handle_sigterm(signum, frame):
@@ -1287,28 +1257,33 @@ if __name__ == '__main__':
     users_pending = queue.Queue()
     users_continue = queue.Queue(maxsize=1000)
     signal_recv = {}
+    users_to_liquidate = {}
+
+    # init on-chain liquidation listener
     logger_liq_onchain = Logger(log_file_name=LOG_DIRECTORY + "liquidations_onchain", log_level=logging.DEBUG, logger_name="liquidation_call").get_log()
     liq_onchain = LiquidationCall(logger_liq_onchain)
     liq_onchain.get_block_time = get_block_time
     liq_onchain.get_reserves_value = get_reserves_value
     liq_onchain.w3_liqcall = Web3LiqListening()
 
-    event_vai_repay = VaiState()
-    users_to_liquidate = {}
-    ws_main = None
-
     print("Init states from local file ...")
     # reload users and token infos and sync to latest block
-    w3_liq = Web3CompoundVenues()
+    # w3_liq = Web3CompoundVenues()
+    w3_liq = Web3CompoundV3()
 
     accounts = init_accounts(w3_liq)
-    bnb48 = Bnb48()
-    bnb48.acc.nonce = w3_liq.w3.eth.get_transaction_count(bnb48.acc.get_address())
-    bnb_gas_price = 60000000000 # bnb48.query_gas_price()
+    # sender = BnB48Sender()
+    # send_callback = bnb48_callback
+    # send_expire = bnb48_expire
+    sender = FlashSender(w3_liq.w3)
+    send_callback = flash_callback
+    send_expire = flash_expire
 
     reserves_init = w3_liq.query_markets_list()
     states = reload_states(reserves_init)
-    states.plug_in = event_vai_repay
+    # event_vai_repay = VaiState()
+    # states.plug_in = event_vai_repay
+    event_vai_repay = None
 
     print("Sync latest states and update local file ...")
     try:
@@ -1316,10 +1291,11 @@ if __name__ == '__main__':
     except Exception as e:
         logger.error(f'Sync to latest states failed: error {e}')
     
-    for usr, _ in states.plug_in.storage.items():
-        states.users_states[usr].vai_repay = w3_liq.query_user_vai_repay(usr)
-    print(f'users vai repay updated: {{"users": {states.plug_in.storage}}}')
-    states.plug_in.storage.clear()
+    if states.plug_in is not None:
+        for usr, _ in states.plug_in.storage.items():
+            states.users_states[usr].vai_repay = w3_liq.query_user_vai_repay(usr)
+        print(f'users vai repay updated: {{"users": {states.plug_in.storage}}}')
+        states.plug_in.storage.clear()
 
     states.cache()
     sync_states(states, w3_liq, reserves_init)
@@ -1334,13 +1310,21 @@ if __name__ == '__main__':
     signals = init_signals(w3_liq, reserves_init, states.ctokens)
     block_infos = init_block_infos(w3_liq)
 
+    send_type = init_send_type(NETWORK)
+    if send_type.aggr != '':
+        res, _ = signals.get_tokens_from_aggr(send_type.aggr)
+        send_type.price_token = res[0].token
+        send_type.price_decimals = res[0].price_decimals 
+
     # router init should after ctoken configs init
-    routers = RouterV2(ABIUniV2('pancakge_v2'))
+    # routers = SwapV2(ABIUniV2('pancakge_v2'))
+    routers = SwapV3(ABIUniV3())
     init_router_pools(routers, reserves_init, states.ctokens)
     print(routers.print_liq_pool())
 
     # todo: disable the multi processing (3/3)
     signal.signal(signal.SIGTERM, handle_sigterm)
+
     ctx = multiprocessing.get_context('spawn')
     core = 3  # cpu_count()
     # multi_pool = ctx.Pool(processes=core)

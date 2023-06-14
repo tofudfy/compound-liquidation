@@ -48,11 +48,14 @@ class State(object):
         if obj is None:
             return []
 
-        try:
-            data = bytes.fromhex(log['data'][2:])
-            args_data = decode(obj['data'], data)  # todo: optimization
-        except Exception as e:
-            raise Exception(f'update failed: {{"error": {e}, "log":{log}}}')
+        if len(obj['data']) != 0:
+            try:
+                data = bytes.fromhex(log['data'][2:])
+                args_data = decode(obj['data'], data)  # todo: optimization
+            except Exception as e:
+                raise Exception(f'update failed: {{"error": {e}, "log":{log}}}')
+        else:
+            args_data = [] 
 
         return self.write_state_with_return(obj['name'], log['topics'], args_data)
 
@@ -86,14 +89,15 @@ class EventState(object):
         self.state: State = state
 
     def update(self, log: LogReceipt) -> Dict:
-        self.state.update(log)
+        return self.state.update(log)
 
 
-def sync_new_events(w3_liq: Web3Liquidation, states: State):
+def sync_new_events(w3_liq: Web3Liquidation, states: EventState):
     w3 = w3_liq.w3
     # block_number = states.last_update + 10000
     block_number = w3.eth.get_block_number()
-    filt = states.gen_events_filter() 
+    filt = states.state.gen_events_filter()
+    print(f"event filter: {filt}")
 
     query_events_loop(w3, states, filt, block_number)
 

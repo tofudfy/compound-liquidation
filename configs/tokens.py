@@ -56,10 +56,11 @@ def reserves_load(reserves) -> Dict[str, CompReserve]:
 
 
 class CtokenRiskParams(object):
-    def __init__(self, borrow_index: int, reserve_factor: int, exchange_rate: int):
+    def __init__(self, borrow_index: int, reserve_factor: int, exchange_rate: int, protocol_seized: int):
         self.borrow_index = borrow_index
         self.reserve_factor = reserve_factor
         self.exchange_rate = exchange_rate
+        self.protocol_seized = protocol_seized
         # self.last_udpate = last_update
 
     def to_dict(self) -> Dict:
@@ -68,8 +69,13 @@ class CtokenRiskParams(object):
         }
 
 
-def new_ctoken_risks(borrow_index=0, reserve_factor=0, exchange_rate=0) -> CtokenRiskParams:
-    return CtokenRiskParams(borrow_index, reserve_factor, exchange_rate)
+def new_ctoken_risks(borrow_index=0, reserve_factor=0, exchange_rate=0, protocol_seized=0) -> CtokenRiskParams:
+    return CtokenRiskParams(
+        borrow_index=borrow_index, 
+        reserve_factor=reserve_factor, 
+        exchange_rate=exchange_rate,
+        protocol_seized=protocol_seized
+    )
 
 
 class CtokenBalances(object):
@@ -130,35 +136,44 @@ def reload_ctokens_risks(path: str) -> Tuple[Dict[str, CtokenRiskParams], int]:
         # collateral_factor = risks.get('collateralFactor', 0)
         reserve_factor = risks.get('reserveFactor', 0)
         exchange_rate = risks.get('exchangeRate', 0)
-        risks_dict[ctoken] = CtokenRiskParams(borrow_index, reserve_factor, exchange_rate)
+        protocol_seized = risks.get('protocolSeize', 0) 
+        
+        risks_dict[ctoken] = CtokenRiskParams(
+            borrow_index=borrow_index, 
+            reserve_factor=reserve_factor, 
+            exchange_rate=exchange_rate,
+            protocol_seized=protocol_seized
+        )
     return risks_dict, last_update
 
 
 class CtokenConfigs(object):
-    def __init__(self, ctoken: str, underlying: str, symbol: str, symbol_hash: bytes, base_units: int, price_source: int, price_fixed: int, swap_router: str, reporter: str, reporter_multiplier: int, is_uniswap_reversed: bool, underlying_decimals: int):
+    def __init__(self, ctoken: str, underlying: str, symbol: str, symbol_hash: bytes, decimals: int, base_units: int, price_source: int, price_fixed: int, swap_router: str, reporter: str, reporter_multiplier: int, is_uniswap_reversed: bool, underlying_decimals: int):
         self.ctoken = ctoken
         self.underlying = underlying
         self.symbol_hash = symbol_hash
         self.symbol = symbol
-        self.decimals = len(str(base_units)) - 1
+        self.base_units = len(str(base_units)) - 1
+        self.decimals = decimals
         self.price_source = price_source
         self.price_fixed = price_fixed
         self.swap_router = swap_router
         self.reporter = reporter
-        self.reporter_multiplier = reporter_multiplier
+        self.reporter_multiplier = len(str(reporter_multiplier)) - 1
         self.is_uniswap_reversed = is_uniswap_reversed
 
         # customized configs
         self.underlying_decimals = underlying_decimals
 
 
-def new_ctoken_configs(ctoken, reporter, underlying, underlying_decimals, symbol="", base_units=100000000, price_source=0, price_fixed=0, swap_router="0x", reporter_multiplier=0, is_uniswap_reversed=False) -> CtokenConfigs:
+def new_ctoken_configs(ctoken, reporter, underlying, underlying_decimals, symbol="", decimals=0, base_units=1, price_source=0, price_fixed=0, swap_router="0x", reporter_multiplier=1, is_uniswap_reversed=False) -> CtokenConfigs:
     return CtokenConfigs(
         ctoken=ctoken, 
         underlying=underlying,
         underlying_decimals=underlying_decimals,
         symbol=symbol,
         symbol_hash=bytes(symbol, encoding='utf-8'),
+        decimals=decimals,
         base_units=base_units, 
         price_source=price_source, 
         price_fixed=price_fixed, 

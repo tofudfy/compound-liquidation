@@ -4,9 +4,9 @@ from typing import List, Dict
 from configs.config import RESERVES
 from configs.tokens import CtokenInfos, new_ctokens_infos
 from configs.protocol import Web3CompoundVenues, complete_ctokens_configs_info
-from configs.router import RouterV2, ABIUniV2
+from configs.router import SwapV2, ABIUniV2
 
-def init_router_pools_with_balances(w3_rout: RouterV2, reserves: List, ctoken_configs: Dict[str, CtokenInfos]):
+def init_router_pools_with_balances(w3_rout: SwapV2, reserves: List, ctoken_configs: Dict[str, CtokenInfos]):
     l = len(reserves)
 
     array_2d = [[None for _ in range(l)] for _ in range(l)]
@@ -21,7 +21,7 @@ def init_router_pools_with_balances(w3_rout: RouterV2, reserves: List, ctoken_co
             token0_decimals = ctoken_configs[reserves[i]].configs.underlying_decimals
             token1_decimals = ctoken_configs[reserves[j]].configs.underlying_decimals
 
-            _, is_token0 = w3_rout.gen_pool_key(token0, token1)
+            _, token0_index = w3_rout.gen_pool_key(token0, token1)
 
             pool = w3_rout.query_max_liq_pool([token0, token1])
             if pool is None:
@@ -29,7 +29,7 @@ def init_router_pools_with_balances(w3_rout: RouterV2, reserves: List, ctoken_co
 
             # todo
             res = pool.liquidity
-            if is_token0:
+            if token0_index == 0:
                 balance_i = round(res[0] / 10**token0_decimals, 2)
                 balance_j = round(res[1] / 10**token1_decimals, 2)
             else:
@@ -47,7 +47,7 @@ def main():
     ctokens = new_ctokens_infos(reserves)
     complete_ctokens_configs_info(ctokens, w3_liq, reserves)
 
-    routers = RouterV2(ABIUniV2('pancakge_v2'))
+    routers = SwapV2(ABIUniV2('pancakge_v2'))
     res = init_router_pools_with_balances(routers, reserves, ctokens)
 
     col_names = []

@@ -14,7 +14,8 @@ class ABICompound(object):
     def __init__(self):
         current_file = os.path.abspath(__file__)
         self.path = os.path.dirname(current_file)
-        self.cerc20_interface = json_file_load(self.path + "/contracts/CErc20.json")['abi']
+        self.cerc20_interface = json_file_load(self.path + "/contracts/CErc20Delegate.json")['abi']
+        self.cether_interface = json_file_load(self.path + "/contracts/CEther.json")['abi']
         self.comptroller_interface = json_file_load(self.path + "/contracts/Unitroller.json")['abi']
         self.aggregator_interface = json_file_load(self.path + '/contracts/AccessControlledOffchainAggregator.json')['abi']
 
@@ -46,9 +47,15 @@ class Web3Liquidation(object):
     def gen_comptroller(self):
         return self.w3.eth.contract(address=P_ALIAS['comet'], abi=self.abi.comptroller_interface)
 
+    def gen_comptroller_with_address(self, comp_addr):
+        return self.w3.eth.contract(address=comp_addr, abi=self.abi.comptroller_interface)
+    
     # ctoken and underlying token share some of the APIs such as symbol, decimals, etc.
     def gen_ctokens(self, token_addr):
         return self.w3.eth.contract(address=token_addr, abi=self.abi.cerc20_interface)
+
+    def gen_ctokens_native(self, token_addr):
+        return self.w3.eth.contract(address=token_addr, abi=self.abi.cether_interface)
 
     def gen_aggregator(self, aggregator):
         return self.w3.eth.contract(address=aggregator, abi=self.abi.aggregator_interface)

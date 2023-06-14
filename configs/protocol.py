@@ -1,8 +1,8 @@
 from web3 import Web3
 from typing import List, Dict, Tuple
 from configs.web3_liq import Web3Liquidation, ABICompoundVenues, ABICompoundV3
-from configs.config import PROVIDER_TYPE, P_ALIAS
-from configs.tokens import CtokenConfigs, CtokenRiskParams, CtokenInfos, new_ctoken_configs, new_ctoken_balances
+from configs.config import PROVIDER_TYPE, P_ALIAS, RESERVES
+from configs.tokens import CtokenConfigs, CtokenRiskParams, CtokenInfos, new_ctoken_configs, new_ctokens_infos, new_ctoken_balances
 
 class Web3CompoundVenues(Web3Liquidation):
     def __init__(self, provider_type=PROVIDER_TYPE):
@@ -11,6 +11,9 @@ class Web3CompoundVenues(Web3Liquidation):
     def gen_price_oracle(self):
         comet = self.gen_comptroller()
         price_oracle = comet.functions.oracle().call()
+        if price_oracle != P_ALIAS['price_oracle']:
+            print("ERROR: price oracle address changed, please check further")
+
         return self.w3.eth.contract(address=price_oracle, abi=self.abi.price_interface)
 
     def gen_source(self, source):
@@ -54,7 +57,7 @@ class Web3CompoundVenues(Web3Liquidation):
 
         price_sc = self.gen_price_oracle()
         reporter = price_sc.functions.getFeed(symbol).call(block_identifier=identifier) 
-        return new_ctoken_configs(ctoken_addr, reporter, ctoken_underlying, underlying_decimals, symbol=symbol)
+        return new_ctoken_configs(ctoken_addr, reporter, ctoken_underlying, underlying_decimals, symbol=symbol, decimals=8)
     
 
 class Web3CompoundV3(Web3Liquidation):
@@ -64,6 +67,9 @@ class Web3CompoundV3(Web3Liquidation):
     def gen_price_oracle(self):
         comet = self.gen_comptroller()
         price_oracle = comet.functions.oracle().call()
+        if price_oracle != P_ALIAS['price_oracle']:
+            print("ERROR: price oracle address changed, please check further")
+            
         return self.w3.eth.contract(address=price_oracle, abi=self.abi.price_interface)
 
     def gen_source(self, source):
@@ -94,17 +100,25 @@ class Web3CompoundV3(Web3Liquidation):
         """
         price_oracle = w3_comp.gen_price_oracle()
         tuples: List = price_oracle.functions.getTokenConfigByCToken(ctoken_addr).call(block_identifier=identifier)
-        
-        token_underlying=tuples[1] 
-        token_sc = w3_comp.gen_ctokens(token_underlying)
-        decimals = token_sc.functions.decimals().call()
+
+        ctoken_sc = w3_comp.gen_ctokens(ctoken_addr)
+        decimals = ctoken_sc.functions.decimals().call()
+
+        if ctoken_addr == "0x4Ddc2D193948926D02f9B1fE9e1daa0718270ED5":
+            token_underlying = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
+            decimals_ua = 18
+        else:
+            token_underlying=tuples[1] 
+            token_sc = w3_comp.gen_ctokens(token_underlying)
+            decimals_ua = token_sc.functions.decimals().call()
 
         return CtokenConfigs(
             ctoken=tuples[0], 
-            underlying=tuples[1],
-            underlying_decimals=decimals,
-            symbol_hash=tuples[2],
+            underlying=token_underlying,
+            underlying_decimals=decimals_ua,
+            symbol_hash='0x' + tuples[2].hex(),
             symbol="",  # todo
+            decimals=decimals,
             base_units=tuples[3], 
             price_source=tuples[4], 
             price_fixed=tuples[5], 
@@ -125,7 +139,16 @@ def onchain_ctoken_risks(ctoken_addr: str, w3_liq: Web3Liquidation, identifier="
     borrow_index = 1  # ctoken_contract.functions.borrowIndex().call(block_identifier=identifier)
     reserve_factor = 0  # ctoken_contract.functions.reserveFactorMantissa().call(block_identifier=identifier)
     exchange_rate = ctoken_contract.functions.exchangeRateStored().call(block_identifier=identifier)
-    return CtokenRiskParams(borrow_index, reserve_factor, exchange_rate)
+    try:
+        protocol_seized = ctoken_contract.functions.protocolSeizeShareMantissa().call(block_identifier=identifier) 
+    except:
+        protocol_seized = 0
+    return CtokenRiskParams(
+        borrow_index=borrow_index, 
+        reserve_factor=reserve_factor, 
+        exchange_rate=exchange_rate,
+        protocol_seized=protocol_seized
+    )
 
 
 def backtesting_reserves(w3_liq: Web3Liquidation, reserves: List, block_num: int) -> Tuple[Dict[str, CtokenInfos], int]:
@@ -157,4 +180,26 @@ def complete_ctokens_risks(obj: Dict[str, CtokenInfos], w3_liq: Web3Liquidation,
     for ctoken_addr in reserves:
         ctoken_contract = w3_liq.gen_ctokens(ctoken_addr)
         obj[ctoken_addr].risks.reserve_factor = ctoken_contract.functions.reserveFactorMantissa().call() # todo: block_identifier=identifier
-        obj[ctoken_addr].risks.exchange_rate = ctoken_contract.functions.exchangeRateStored().call() # block_identifier=identifier 
+        obj[ctoken_addr].risks.exchange_rate = ctoken_contract.functions.exchangeRateStored().call() # block_identifier=identifier
+
+        # todo: venus protocol may have different interface
+        try:
+            obj[ctoken_addr].risks.protocol_seized = ctoken_contract.functions.protocolSeizeShareMantissa().call() # block_identifier=identifier
+        except:
+            pass
+
+
+def ctokens_configs_test():
+    w3_liq = Web3CompoundV3('http2')
+    # reserves = w3_liq.query_markets_list()
+    reserves = RESERVES
+
+    ctokens_infos = new_ctokens_infos(reserves)
+    complete_ctokens_configs_info(ctokens_infos, w3_liq, reserves)
+
+    for ctoken, data in ctokens_infos.items():
+        print(f'ctoken:"{ctoken}", source_type: {data.configs.price_source}, reporter: "{data.configs.reporter}", price_multiplier: {data.configs.reporter_multiplier}, ctoken_decimal: {data.configs.decimals}, base_units: {data.configs.base_units}')
+
+
+if __name__ == '__main__':
+    ctokens_configs_test()

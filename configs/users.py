@@ -317,6 +317,7 @@ class States(object):
             return {}
 
         try:
+            # data = bytes.fromhex(log['data'].hex()[2:])
             data = bytes.fromhex(log['data'][2:])
             args_data = decode(obj['data'], data)  # todo: optimization
         except Exception as e:
@@ -324,7 +325,7 @@ class States(object):
 
         reserve = log['address']
         # when init the states, the ctokens used are check sum address
-        reserve = Web3.toChecksumAddress(reserve)
+        reserve = Web3.to_checksum_address(reserve)
 
         # include: Transfer, Mint, Redeem
         if obj['name'] == 'Transfer':
@@ -430,6 +431,10 @@ class States(object):
                 sum_borrow_plus_effects += debt_balance * price // EXP_SCALE
 
         self.users_states[usr].health_factor.debt_volume = sum_borrow_plus_effects 
+
+
+def new_user_states(block_num) -> States:
+    return States({}, None, block_num, "")
 
 
 def filter_states(users_states: Dict[str, UserStates], profit_thres) -> Dict[str, UserStates]:
@@ -548,7 +553,7 @@ def reload_states(reserves: List) -> States:
 # used for test only
 def query_reserves(usr: str, w3_liq: Web3Liquidation, reserves: List, identifier="latest") -> Dict[str, List]:
     user_reserves = {}
-    usr = Web3.toChecksumAddress(usr)
+    usr = Web3.to_checksum_address(usr)
     comptroller = w3_liq.gen_comptroller() 
 
     reserves_as_market = comptroller.functions.getAssetsIn(usr).call(block_identifier=identifier)
@@ -574,7 +579,10 @@ def backtesting_users(w3_liq: Web3CompoundVenues, user: str, reserves: List, blo
     users_states = {}
     reserves = query_reserves(user, w3_liq, reserves, block_num)
     print(reserves)
-    vai_repay = w3_liq.query_user_vai_repay(user)
+    try:
+        vai_repay = w3_liq.query_user_vai_repay(user)
+    except:
+        vai_repay = 0
     users_states[user] = UserStates(reserves, new_health_factor(), vai_repay)
 
     return users_states
@@ -582,8 +590,8 @@ def backtesting_users(w3_liq: Web3CompoundVenues, user: str, reserves: List, blo
 
 def backtesting_states(w3_liq: Web3CompoundVenues, user: str, reserves: List, block_num: int) -> States:
     users_states = backtesting_users(w3_liq, user, reserves, block_num)
-    reserves_trim = list(users_states[user].reserves.keys())
-    ctokens_infos = backtesting_reserves(w3_liq, reserves_trim, block_num)
+    # reserves_trim = list(users_states[user].reserves.keys())
+    ctokens_infos = backtesting_reserves(w3_liq, reserves, block_num)
     return States(users_states, ctokens_infos, int(block_num), "")
 
 
@@ -598,7 +606,7 @@ def user_state_extend_hook(obj: States, res: Dict, count: int):
 def sync_states(states: States, w3_liq: Web3Liquidation, reserves: List, delay=0):
     w3 = w3_liq.w3
     block_number = w3.eth.get_block_number() - delay
-    # block_number = states.last_update + 10000
+    # block_number = 17270818 # {'code': -32000, 'message': 'failed to get logs for block #17270819 (0x8b30de..c7afcb)'}
     filt = states.gen_states_filter(reserves)
 
     query_events_loop(w3, states, filt, block_number, user_state_extend_hook)  # , data_cache_hook)
@@ -606,7 +614,7 @@ def sync_states(states: States, w3_liq: Web3Liquidation, reserves: List, delay=0
 
 def reload_and_extend_states(w3_liq: Web3Liquidation, states: States, usr: str):
     comptroller = w3_liq.gen_comptroller()
-    user = Web3.toChecksumAddress(usr)
+    user = Web3.to_checksum_address(usr)
     reserves_as_market = comptroller.functions.getAssetsIn(user).call()
 
     full_reserves = list(states.users_states[usr].reserves.keys())
@@ -623,7 +631,7 @@ def reload_and_extend_states(w3_liq: Web3Liquidation, states: States, usr: str):
 
 
 def reload_and_extend_states_test():
-    w3_liq = Web3Liquidation(provider_type='http')
+    w3_liq = Web3Liquidation(provider_type='http_local')
     reserves = RESERVES
     states = reload_states(reserves)
     for usr, _ in states.users_states.items():
@@ -634,13 +642,14 @@ def reload_and_extend_states_test():
 
 
 def reload_and_cache_test():
+    w3_liq = Web3Liquidation()
     # w3_liq = Web3Liquidation(provider_type='http3')
     # w3_liq = Web3Liquidation(provider_type='ws_ym')
-    w3_liq = Web3Liquidation()
-    # reserves = w3_liq.query_markets_list()
-    reserves = RESERVES
+    # w3_liq = Web3Liquidation(provider_type='http_local')
+    reserves = w3_liq.query_markets_list()
+    # reserves = RESERVES
     states = reload_states(reserves)
-    sync_states(states, w3_liq, reserves, 1000)
+    sync_states(states, w3_liq, reserves, 100)
     states.cache()
 
 

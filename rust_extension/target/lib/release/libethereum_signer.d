@@ -1,1 +1,0 @@
-/home/fydeng/bitbucket.pinghu.tech/fydeng/compound-liquidation/rust_extension/target/lib/release/libethereum_signer.rlib: /home/fydeng/bitbucket.pinghu.tech/fydeng/compound-liquidation/rust_extension/src/lib.rs
