@@ -39,17 +39,27 @@ COMPETIPORS = {
         # 0508
         '0xECF32a129124Dc322bDCe86A690D91B9C7b46d78',
         '0x4c3E78594F12973CE594C29c4ac18195E5485381',
-        '0xEB8Fea72614b75024b83D6cdE286739DB501125B'
+        '0xEB8Fea72614b75024b83D6cdE286739DB501125B',
+
+        # 0515
+        '0x832Fa33Ac23ff535A959ceFCC5B3a95d3DAe53B0',
+        '0xab0Cee728CFF7c57FAb409bb7022e47F2BC46D96',
+
+        # 0605 ADDED
+        '0xF4EF6294eB7DF3e6cD6f6B0fBb4eAe977119dF86',
+        '0x5e4d1F5BDef71Dc9ACBe07444162896AA7098a32',
+        '0xE8871c8aD85cF5C1C018638298838bf3c450b716'
     ],
     "Ethereum": [
         "0x9d5A494Cec2934Dc01Ec1cAF595840450Bd30f9B",
     ]
 }
 
-PREFIX = "/data/fydeng/"  # "./" 
+PREFIX = "./" # "/data/fydeng/"
 HASH_ZERO = "0x0000000000000000000000000000000000000000000000000000000000000000"
 
-w3 = Web3(load_provider('http_local'))
+# w3 = Web3(load_provider('http_local'))
+w3 = Web3(load_provider('http'))
 w3.middleware_onion.inject(geth_poa_middleware, layer=0)
 
 
@@ -177,7 +187,7 @@ def read_and_parse(file, targets, log_filter):
 
         # key = str(block_num) + ":" + str(tx_index).zfill(3)
         key = tx_hash
-        res[key] = [tx_hash, contract, borrower, sig_hash, time_sig, time_send, time_competitor, time_onchain, corrcoef, revenue, is_comp, validator, status, is_bnb48, is_private_send]
+        res[key] = [tx_hash, contract, borrower, sig_hash, time_sig, time_send, time_competitor, unix_time_ms(time_onchain), time_onchain, corrcoef, revenue, is_comp, validator, status, is_bnb48, is_private_send]
     
     wb.save("./outputs/competitions" + file_date + "_details.xlsx")
     return res
@@ -191,18 +201,21 @@ def read_and_parse_file1(file_date, target, default_time):
     log_time = 0
     log_time2 = 0
     switch = False
+    switch_sig = False
     sig_hash = ""
     status = ""
     for line in iter_f:
         if line.find("new message received: ") > -1:
             temp = line
+            switch_sig = True
 
-        if line.find(target) > -1 and line.find("liquidation") > -1:
+        if switch_sig and line.find(target) > -1 and line.find("liquidation") > -1:
             log_time = unix_time_ms(line_time_parser(temp))
             if log_time + 60 < default_time:
                 log_time = 0
                 continue
 
+            switch_sig = False
             switch = True
             sig_hash = logs_parse_sig(temp)
             print(temp)
@@ -224,6 +237,7 @@ def read_and_parse_file1(file_date, target, default_time):
             else:
                 status = "unknown"
             
+            switch = False
             break
 
     return [log_time, log_time2], sig_hash, status
@@ -244,7 +258,7 @@ def logs_parse_sig(line):
 
 
 def read_and_parse_file2(file_date, target):
-    file = "./liquidations_competitor_pendings_" + file_date + ".log"
+    file = PREFIX + "liquidations_competitor_pendings_" + file_date + ".log"
     f = open(file)
     iter_f = iter(f)
 
@@ -287,7 +301,7 @@ def get_tx_data(tx_hash):
 
 
 def read_and_parse_file2_ext(file_date, liq_hash, sig_hash, time_sig, targets, wb, switch):
-    file = "./liquidations_competitor_pendings_" + file_date + ".log"
+    file = PREFIX + "liquidations_competitor_pendings_" + file_date + ".log"
     f = open(file)
     iter_f = iter(f)
 
@@ -359,13 +373,13 @@ def logs_parser_onchain(line, p):
 
 
 def process():
-    date = "20230512"
+    date = "20230607"
     res = read_and_parse_from_folder(PREFIX, "liquidations_onchain_" + date, ["liquidationCalls: "], logs_parser_onchain)
     print(res)
 
     wb = openpyxl.Workbook()
     ws = wb.create_sheet('ALL')
-    ws.append(["liq_hash", "bot", "borrower", "sig_hash", "time_sig", "time_send", "time_comp", "on_chain", "corrcoef", "revenue", "is_comp", "validator", "bnb48_send_status", "is_bnb48", "is_priv_send"])
+    ws.append(["liq_hash", "bot", "borrower", "sig_hash", "time_sig", "time_send", "time_comp", "time_onchain", "on_chain", "corrcoef", "revenue", "is_comp", "validator", "bnb48_send_status", "is_bnb48", "is_priv_send"])
     for data in res.values():
         ws.append(data)
     wb.save("./outputs/competitions" + date + ".xlsx")

@@ -30,7 +30,9 @@ class ABICompoundV3(ABICompound):
 class ABICompoundVenues(ABICompound):
     def __init__(self):
         super().__init__()
-        self.price_interface = json_file_load(self.path + "/contracts/VenusChainlinkOracle.json")['abi']
+        # self.price_interface = json_file_load(self.path + "/contracts/VenusChainlinkOracle.json")['abi']
+        self.price_interface = json_file_load(self.path + "/contracts/OptimizedTransparentUpgradeableProxy.json")['abi']
+        self.price_interface_ext = json_file_load(self.path + "/contracts/ChainlinkOracle.json")['abi']
         self.source_interface = json_file_load(self.path + "/contracts/EACAggregatorProxy.json")['abi']
         self.vai_controller = json_file_load(self.path + "/contracts/VAIController.json")['abi']
         self.proxy_liquidator = json_file_load(self.path + '/contracts/Liquidator.json')['abi'] 

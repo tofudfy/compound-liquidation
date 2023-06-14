@@ -30,7 +30,7 @@ from tx import sign_sending_tx_to_tasks, start_new_subscribe, init_accounts
 from utils import WSconnect, FakePool, polling_full, subscribe_to_node, subscribe_tx_light, subscribe_event_light, subscribe_event_full, subscribe_header_full
 from types_light import LogReceiptLight, converter, converter_full
 
-from configs.config import CONNECTION, NETWORK, P_ALIAS, LIQUDATION_LOG_LEVEL, EXP_SCALE, SIG_DELAY_MAX, INTVL
+from configs.config import CONNECTION, NETWORK, P_ALIAS, LIQUDATION_LOG_LEVEL, EXP_SCALE, SIG_DELAY_MAX, INTVL, BNB48
 from configs.protocol import Web3CompoundVenues, Web3CompoundV3, complete_ctokens_configs_info, complete_ctokens_risks, query_exchange_rate
 from configs.users import UserStates, States, HighProfitSates, HealthFactor, gen_states_filter, reload_states, sync_states, reload_and_extend_states
 from configs.comet import CometConfigs, gen_comet_filter, init_comet_configs
@@ -80,7 +80,7 @@ def on_message(message: Dict):
     if 'params' in message and 'result' in message['params']:
         result = message['params']['result']
 
-        validator = result['miner']
+        validator = Web3.toChecksumAddress(result['miner'])
         block_number = int(result['number'], 16)
         block_timestamp = int(result['timestamp'], 16)
         base_fee = result['baseFeePerGas']
@@ -108,8 +108,8 @@ def on_message(message: Dict):
         for acc in accounts:
             acc.nonce = w3_liq.w3.eth.get_transaction_count(acc.get_address())
 
-        # task 5: todo
-        sender.check_status(validator, block_number, block_timestamp)
+        # task 5: update sender states
+        sender.update(w3_liq.w3, validator, block_number, block_timestamp)
 
 
 async def get_pending_callback(message):
@@ -169,12 +169,11 @@ async def get_pending_transactions_light(callback):
 async def liquidation_idel(callback):
     prev_block = 0
     while True:
-        start = timeit.default_timer()
+        # start = timeit.default_timer()
         # logger.debug("liquidation idel in control")
         try:
             prev_block = await callback(prev_block)
-            
-            stop = timeit.default_timer()
+            # stop = timeit.default_timer()
             # logger.debug(f'liquidation idel out of control: {{"total_time": {stop-start}, "height": {prev_block}}}')
             await asyncio.sleep(0.2)
 
@@ -844,6 +843,7 @@ def liquidation_start(index: int, usr: str, ctk: Dict[str, CtokenInfos], block_i
     logger.info(f'liquidation start: {{"index":"{index}", "user":"{usr}", "revenue":{revenue/10**18}, "routs":{routs.print_routs()}, "block_num":{block_infos.block_num}, "params":{params}, "to_addr": "{to_addr}", "gainedAmount": {seized_amount}, "signal":{sig_recv}}}')
 
     # todo: liquidated when an invalid signal is given
+    # todo: conflict with bnb48
     res, prev_index = is_user_liquidated([params[0], to_addr, params[1]])
     if res:
         logger.debug(f'user is liquidated: {{"index":"{prev_index}", "revenue": {revenue}, "params":{params}}}')    
@@ -900,7 +900,13 @@ def liquidation_start(index: int, usr: str, ctk: Dict[str, CtokenInfos], block_i
 
     tx['data'] = bytes.fromhex(intput[2:])
     tx['to'] = bytes.fromhex(P_ALIAS['contract'][2:])
+    tx["chainId"] = CONNECTION[NETWORK]['chain_id'] # todo: temp solution
+
+    # todo: move to other place
+    # if send_lock:
+    #     return []
     
+    # todo: conflict with bnb48
     set_user_liquidated(index, [params[0], to_addr, params[1]])
     return sign_sending_tx_to_tasks(index, tx, profit, acc)
 
@@ -1278,6 +1284,11 @@ if __name__ == '__main__':
     sender = FlashSender(w3_liq.w3)
     send_callback = flash_callback
     send_expire = flash_expire
+
+    # bnb48 = Bnb48()
+    # bnb48.acc.nonce = w3_liq.w3.eth.get_transaction_count(bnb48.acc.get_address())
+    # bnb_gas_price = 60000000000 # bnb48.query_gas_price()
+    # bnb48_recheck = {}
 
     reserves_init = w3_liq.query_markets_list()
     states = reload_states(reserves_init)

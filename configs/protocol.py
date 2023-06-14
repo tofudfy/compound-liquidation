@@ -16,6 +16,9 @@ class Web3CompoundVenues(Web3Liquidation):
 
         return self.w3.eth.contract(address=price_oracle, abi=self.abi.price_interface)
 
+    def gen_price_oracle_with_address(self, price_oracle):
+        return self.w3.eth.contract(address=price_oracle, abi=self.abi.price_interface_ext)
+    
     def gen_source(self, source):
         return self.w3.eth.contract(address=source, abi=self.abi.source_interface)
 
@@ -41,7 +44,7 @@ class Web3CompoundVenues(Web3Liquidation):
     def query_ctokens_configs(self, ctoken_addr: str, identifier="latest") -> CtokenConfigs:
         ctoken_sc = self.gen_ctokens(ctoken_addr)
         try:
-            ctoken_underlying = ctoken_sc.functions.underlying().call()
+            ctoken_underlying = ctoken_underlying_ext = ctoken_sc.functions.underlying().call()
             # the API of symbol are same for both ctoken and its underlying token
             token_sc = self.gen_ctokens(ctoken_underlying)
             symbol = token_sc.functions.symbol().call()
@@ -49,6 +52,7 @@ class Web3CompoundVenues(Web3Liquidation):
         except:
             if ctoken_addr == "0xA07c5b74C9B40447a954e1466938b865b6BBea36":
                 ctoken_underlying = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"  # wBNB
+                ctoken_underlying_ext = "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB"
                 symbol = "vBNB"  # symbol input to getFeed
                 underlying_decimals = 18
             else:
@@ -56,7 +60,46 @@ class Web3CompoundVenues(Web3Liquidation):
                 print(ctoken_addr)
 
         price_sc = self.gen_price_oracle()
-        reporter = price_sc.functions.getFeed(symbol).call(block_identifier=identifier) 
+
+        #  reporter = price_sc.functions.getFeed(symbol).call(block_identifier=identifier)  # deprecated
+        # struct TokenConfig {
+        #     /// @notice asset address
+        #     address asset;
+        #     /// @notice `oracles` stores the oracles based on their role in the following order:
+        #     /// [main, pivot, fallback],
+        #     /// It can be indexed with the corresponding enum OracleRole value
+        #     address[3] oracles;
+        #     /// @notice `enableFlagsForOracles` stores the enabled state
+        #     /// for each oracle in the same order as `oracles`
+        #     bool[3] enableFlagsForOracles;
+        # }
+        tuples = price_sc.functions.getTokenConfig(ctoken_addr).call(block_identifier=identifier)
+        i = 0
+        for res in tuples[2]:
+            if res:
+                break
+            else:
+                i += 1
+        
+        # debug
+        if i != 0:
+            print(f"{ctoken_addr} unexepected type {i}")
+
+        oracle_addr = tuples[1][i]
+        price_ext_sc = self.gen_price_oracle_with_address(oracle_addr)
+        # struct TokenConfig {
+        #     /// @notice Underlying token address, which can't be a null address
+        #     /// @notice Used to check if a token is supported
+        #     /// @notice 0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB for BNB
+        #     address asset;
+        #     /// @notice Chainlink feed address
+        #     address feed;
+        #     /// @notice Price expiration period of this asset
+        #     uint256 maxStalePeriod;
+        # }
+        tuples = price_ext_sc.functions.tokenConfigs(ctoken_underlying_ext).call()
+        reporter = tuples[1]
+
         return new_ctoken_configs(ctoken_addr, reporter, ctoken_underlying, underlying_decimals, symbol=symbol, decimals=8)
     
 
@@ -201,5 +244,18 @@ def ctokens_configs_test():
         print(f'ctoken:"{ctoken}", source_type: {data.configs.price_source}, reporter: "{data.configs.reporter}", price_multiplier: {data.configs.reporter_multiplier}, ctoken_decimal: {data.configs.decimals}, base_units: {data.configs.base_units}')
 
 
+# June 3, 2023 https://bscscan.com/address/0x6592b5DE802159F3E74B2486b091D11a8256ab8A#code
+def venus_oracle_test():
+    w3_liq = Web3CompoundVenues()
+    reserves = w3_liq.query_markets_list()
+
+    results = {}
+    for ctoken in reserves:
+        res = w3_liq.query_ctokens_configs(ctoken)
+        results[ctoken] = res.reporter
+
+    print(results) 
+
+
 if __name__ == '__main__':
-    ctokens_configs_test()
+    venus_oracle_test()

@@ -131,7 +131,7 @@ class BnB48Sender(object):
 
         await asyncio.sleep(0.001)
     
-    def check_status(self, validator, block_number, block_timestamp):
+    def update(self, w3, validator: str, block_number: int, block_timestamp: int):
         if validator in BNB48:
             is_bnb48 = True
         else:
@@ -147,6 +147,9 @@ class BnB48Sender(object):
 
         for id in del_list:
             self.storage.pop(id)
+
+        # update nonce
+        self.bnb48.acc.nonce = w3.eth.get_transaction_count(self.bnb48.acc.get_address())
 
 
 class FlashSender(object):
@@ -194,6 +197,5 @@ class FlashSender(object):
 
         await asyncio.sleep(0.001)
 
-    def check_status(self, validator, block_number, block_timestamp):
+    def update(self, w3, validator, block_number, block_timestamp):
         pass
-    

@@ -24,6 +24,7 @@ from compound import LiqPair, liquidation_simulation, profit_simulation, signal_
 from utils import TxFees, FakeLogger, FakePool, state_diff_aggr_price, subscribe_event_light, send_msg_tenderly, state_diff_uniswap_anchor_price
 from tx import create_type0_tx, init_accounts
 
+
 SIGNAL_MESSAGE = {'type': '0x0', 'nonce': '0x133798a', 'gasPrice': '0x78ace58d37', 'maxPriorityFeePerGas': None, 'maxFeePerGas': None, 'gas': '0x7a120', 'value': '0x0', 'input': '', 'v': '0x135', 'r': '0xe2611d8e66e2886d4fe9a3ec66a42fa9f4d541c372cf138972f0483e4f04efd4', 's': '0x52d45d82218390ac665912ec9ee85a71636e411955c8b01a035792dfb7cffd3', 'to': '0xc6d82423c6f8b0c406c1c34aee8e988b14d5f685', 'hash': '0xd845e76f1f20ec68ff18190be6bb7186731f9a9ec6c52332d0b3ecc0362c3a69', 'from': '0x250abd1d4ebc8e70a4981677d5525f827660bde4'}
 
 
@@ -236,27 +237,6 @@ def liquidate_from_proxy_test(w3_liq: Web3Liquidation, sig_hash: str, to_addr: s
     return send_msg_tenderly(tx_liq, state_diff, block_num)
 
 
-def liquidate_from_contract_test(w3_liq: Web3Liquidation, sig_hash: str, to_addr: str, params: List, block_num):
-    # todo: make correction
-    tx = liquidate_from_flash_loan(to_addr, params, None, None)
-
-    # send transaction to chain directly
-    # async with connect(URL['light']['url'],
-    #         extra_headers={'auth': URL['light']['auth']}) as ws:
-    #     coroutines = sign_sending_tx_to_tasks(ws, "", tx, FakeLogger())
-    #     tasks = [asyncio.create_task(coroutine) for coroutine in coroutines]
-    #     await asyncio.gather(*tasks)
-    
-    # simulation transaction on tenderly
-    state_diff, fees, account_addr = state_diff_aggr_price(w3_liq, sig_hash, to_addr, params, account_addr="0x4153aEf7bf3c7833b82B8F2909b590DdcF6f8c15")
-    tx['gasPrice'] = fees.gas_price
-    tx['maxPriorityFeePerGas'] = fees.mev
-    tx['maxFeePerGas'] = fees.max_fee
-    tx['chainId'] = 56
-    tx['from'] = account_addr
-    send_msg_tenderly(tx, state_diff, block_num)
-
-
 def liquidate_directly_test(w3_liq: Web3Liquidation, ctk: Dict[str, CtokenInfos], account_addr: str, sig_hash: str, to_addr: str, params: List, block_num):
     # simulation transaction on tenderly
     if sig_hash != "":
@@ -325,7 +305,6 @@ def liquidate_from_flash_loan(to_addr, params, rout: SwapV3, ctk: CtokenConfigs)
 
     tx['data'] = intput
     tx['to'] = P_ALIAS['contract']
-    print(tx)
 
     return tx
 
