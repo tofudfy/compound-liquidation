@@ -59,7 +59,7 @@ PREFIX = "./" # "/data/fydeng/"
 HASH_ZERO = "0x0000000000000000000000000000000000000000000000000000000000000000"
 
 # w3 = Web3(load_provider('http_local'))
-w3 = Web3(load_provider('http'))
+w3 = Web3(load_provider('http_ym'))
 w3.middleware_onion.inject(geth_poa_middleware, layer=0)
 
 
@@ -154,7 +154,11 @@ def read_and_parse(file, targets, log_filter):
             
             block = w3.eth.get_block(block_num)
             if tx_hash == HASH_ZERO:
-                tx_hash = block['transactions'][tx_index].hex()
+                try:
+                    tx_hash = block['transactions'][tx_index].hex()
+                except:
+                    print(f"error: blocknum {block_num} txs {len(block['transactions'])} index {tx_index}")
+                    continue
 
             validator = block['miner']
             if validator in BNB48:
@@ -373,7 +377,7 @@ def logs_parser_onchain(line, p):
 
 
 def process():
-    date = "20230607"
+    date = "20230610"
     res = read_and_parse_from_folder(PREFIX, "liquidations_onchain_" + date, ["liquidationCalls: "], logs_parser_onchain)
     print(res)
 

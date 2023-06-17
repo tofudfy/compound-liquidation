@@ -47,7 +47,7 @@ def main():
     ctokens = new_ctokens_infos(reserves)
     complete_ctokens_configs_info(ctokens, w3_liq, reserves)
 
-    routers = SwapV2(ABIUniV2('pancakge_v2'))
+    routers = SwapV2(ABIUniV2('pancakge_v2'), 25)
     res = init_router_pools_with_balances(routers, reserves, ctokens)
 
     col_names = []
