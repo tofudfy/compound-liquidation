@@ -9,7 +9,7 @@ from hexbytes import HexBytes
 from eth_abi import decode
 from configs.config import NETWORK, SELECTOR, INTVL, ADDRESS_ZERO, P_ALIAS, S_ALIAS, ST_ALIAS
 from configs.web3_liq import Web3Liquidation
-from configs.tokens import CtokenInfos, new_ctokens_infos
+from configs.tokens import CtokenConfigs, CtokenInfos, new_ctokens_infos
 from configs.protocol import Web3CompoundVenues, Web3CompoundV3, complete_ctokens_configs_info
 
 from configs.config import RESERVES
@@ -58,7 +58,6 @@ class Signals(object):
         self.signals_epoch: Dict[str, int] = {}
 
     def get_tokens_from_aggr(self, signal) -> Tuple[List[AggregatorInfos], str]:
-        # signal = Web3.toChecksumAddress(signal)
         tokens_infos = self.signal_token_map[signal]
 
         tokens_addr = []
@@ -170,6 +169,16 @@ class SignalsCompV2(Signals):
         
         return contract_addr, price 
 
+    def get_oracle_price(self, price: int, feed_decimals: int, cfg: CtokenConfigs):
+        multiplier = cfg.reporter_multiplier
+        base_units = cfg.base_units
+        return int(self.price_scale(price, base_units, multiplier))
+
+    def gen_oracle_params(self, feed_decimals: int, cfg: CtokenConfigs):
+        multiplier = cfg.reporter_multiplier
+        base_units = cfg.base_units
+        return (base_units, multiplier)
+    
     def is_within_anchor(self, price):
         return True
 
@@ -191,6 +200,14 @@ class SignalsCompV2(Signals):
 class SignalsCompVenues(Signals):
     def __init__(self, source_token_map: Dict[str, List[AggregatorInfos]], aggregator_source_filter: List):
         super().__init__(source_token_map, aggregator_source_filter)
+
+    def get_oracle_price(self, price: int, feed_decimals: int, cfg: CtokenConfigs):
+        decimals_ua = cfg.underlying_decimals
+        return int(self.price_scale(price, decimals_ua, feed_decimals))
+
+    def gen_oracle_params(self, feed_decimals: int, cfg: CtokenConfigs):
+        decimals_ua = cfg.underlying_decimals
+        return (decimals_ua, feed_decimals)
 
     # introduced by compound protocol
     def price_scale(self, price: int, underlying_decimals: int, feed_decimals: int) -> str:
@@ -260,6 +277,7 @@ def query_reserves_aggregator(w3_liq: Web3CompoundVenues, reserves: List, ctoken
         aggregator_offchain = w3_liq.gen_aggregator(aggregator)
         descr = aggregator_offchain.functions.description().call()
         price_decimals = aggregator_offchain.functions.decimals().call() 
+        time.sleep(0.01)
 
         aggr_lower = aggregator.lower()
         if dic.get(aggr_lower, None) is None:
@@ -343,6 +361,7 @@ def complete_ctokens_price_info(obj: Dict[str, CtokenInfos], w3_liq: Web3Liquida
         ctoken_price = init_ctoken_price(w3_liq, ctoken_addr, identifier)
         obj[ctoken_addr].price = ctoken_price
         print(ctoken_addr, ctoken_price.price_current)
+        time.sleep(0.01)
 
 
 def tx_filter_test():
@@ -367,8 +386,8 @@ def tx_filter_test():
 
 
 def signals_init_test():
-    # w3_liq = Web3CompoundVenues()
-    w3_liq = Web3CompoundV3()
+    w3_liq = Web3CompoundVenues('http2')
+    # w3_liq = Web3CompoundV3()
 
     # reserves = w3_liq.query_markets_list()
     reserves = RESERVES

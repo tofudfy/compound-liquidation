@@ -595,21 +595,46 @@ def backtesting_states(w3_liq: Web3CompoundVenues, user: str, reserves: List, bl
     return States(users_states, ctokens_infos, int(block_num), "")
 
 
-def user_state_extend_hook(obj: States, res: Dict, count: int):
-    w3_liq = Web3Liquidation()
+def user_state_extend_hook(obj: States, w3_liq: Web3Liquidation, res: Dict, count: int):
     for usr, _ in res.items():
         reload_and_extend_states(w3_liq, obj, usr)
 
     return count
 
 
+def query_events_loop_liq(w3_liq: Web3Liquidation, obj, filt, target_block, hook):
+    counter = 0
+    while obj.last_update < target_block:
+        from_block = obj.last_update + 1
+        to_block = from_block + 1999
+        if to_block > target_block:
+            to_block = target_block
+
+        filt['fromBlock'] = hex(from_block)
+        filt['toBlock'] = hex(to_block)
+
+        try:
+            logs = w3_liq.w3.eth.get_logs(filt)
+        except Exception as e:
+            raise Exception(f"get logs failed at {from_block}: {e}")
+
+        res = {}
+        for log in logs:
+            temp = obj.update(log)
+            if temp is not None:
+                res.update(temp)
+        obj.last_update = to_block
+
+        counter += 1
+        counter = hook(obj, w3_liq, res, counter)
+
+
 def sync_states(states: States, w3_liq: Web3Liquidation, reserves: List, delay=0):
-    w3 = w3_liq.w3
-    block_number = w3.eth.get_block_number() - delay
+    block_number = w3_liq.w3.eth.get_block_number() - delay
     # block_number = 17270818 # {'code': -32000, 'message': 'failed to get logs for block #17270819 (0x8b30de..c7afcb)'}
     filt = states.gen_states_filter(reserves)
 
-    query_events_loop(w3, states, filt, block_number, user_state_extend_hook)  # , data_cache_hook)
+    query_events_loop_liq(w3_liq, states, filt, block_number, user_state_extend_hook)
 
 
 def reload_and_extend_states(w3_liq: Web3Liquidation, states: States, usr: str):

@@ -26,6 +26,7 @@ from bxcommon.utils import convert
 from bxcommon.messages.eth.serializers.transaction import Transaction, DynamicFeeTransaction
 
 from liquidations import Web3LiqListening, LiquidationCall, gen_liquidation_filter
+from bots import BSCVenusPancakeV2
 from tx import sign_sending_tx_to_tasks, start_new_subscribe, init_accounts
 from utils import WSconnect, FakePool, polling_full, subscribe_to_node, subscribe_tx_light, subscribe_event_light, subscribe_event_full, subscribe_header_full
 from types_light import LogReceiptLight, converter, converter_full
@@ -109,7 +110,7 @@ def on_message(message: Dict):
             acc.nonce = w3_liq.w3.eth.get_transaction_count(acc.get_address())
 
         # task 5: update sender states
-        sender.update(w3_liq.w3, validator, block_number, block_timestamp)
+        sender.update(validator, block_number, block_timestamp, states.ctokens['0xA07c5b74C9B40447a954e1466938b865b6BBea36'].price.price_current)
 
 
 async def get_pending_callback(message):
@@ -446,16 +447,9 @@ def signals_subscribe_callback(response: LogReceiptLight):
         aggr_infos = signals.signal_token_map[contract_addr.lower()]
         for token_info in aggr_infos:
             ctoken_addr = token_info.token
-            # for BSC Venus
-            # decimals = states.ctokens[ctoken_addr].configs.underlying_decimals  
-            # feed_decimals = token_info.price_decimals
-            # args = (decimals, feed_decimals)
+            feed_decimals = token_info.price_decimals
 
-            # for ETH V2
-            multiplier = states.ctokens[ctoken_addr].configs.reporter_multiplier 
-            base_units = states.ctokens[ctoken_addr].configs.base_units
-            args = (base_units, multiplier)
-
+            args = signals.gen_oracle_params(feed_decimals, states.ctokens[ctoken_addr].configs)
             states.ctokens[ctoken_addr].price.confirm(log, signals.price_scale, args)
             logger.info(f'signals price confirmed: {{"ctoken": "{ctoken_addr}", "price": {states.ctokens[ctoken_addr].price.__dict__}}}')
 
@@ -503,16 +497,14 @@ def vai_repay_subscribe_callback(response: LogReceiptLight):
 
 
 def process_receipts(receipts: list):
-    global send_lock
-    global send_counter
     for receipt in receipts:
         logger.info(f'received receipt: {receipt}')
 
         if int(receipt['status'], 16) == 0:
-            send_counter += 1
+            sender.counter += 1
 
-        if send_counter >= 5:
-            send_lock = True
+        if sender.counter >= 5:
+            sender.lock = True
             logger.info(f'sending disabled')
 
 
@@ -526,7 +518,7 @@ def bnb48_callback(error_code, msg, mev_gas_price, txs, bnb48_expire_timestamp):
 
 
 def bnb48_expire(block_num):
-   return block_infos.get_current_timestamp(block_num) + 6
+   return block_infos.get_current_timestamp(block_num)
 
 
 def flash_callback(error_code, err_msg, index):
@@ -653,7 +645,7 @@ def liquidation_simulation(reserves: Dict[str, CompReserve], ctk: Dict[str, Ctok
 
     # normally can not happened
     if len(debts) == 0:
-        return [], []
+        return {}
 
     debts = sorted(debts, reverse=True)
     debt_normalize_max = debts[0][0]
@@ -686,8 +678,10 @@ def liquidation_simulation(reserves: Dict[str, CompReserve], ctk: Dict[str, Ctok
                     rejust_repay_amount = actual_repay_amount
 
                 # introduced by Compound protocol
-                seize_tokens -= seize_tokens * ctk[ctoken_addr].risks.protocol_seized // EXP_SCALE
-                # todo: * treary_percent / com.liq_incentive # charged by venus liquidator.sol to treasury
+                # seize_tokens -= seize_tokens * ctk[ctoken_addr].risks.protocol_seized // EXP_SCALE
+                # charged by venus liquidator.sol to treasury
+                # ref: https://bscscan.com/address/0x0be68b10dfb2e303d3d0a51cd8368fb439e46409#code: _splitLiquidationIncentive
+                seize_tokens = seize_tokens * 50000000000000000 / com.liq_incentive  # treary_percent = 50000000000000000
                 
                 # refer to getHypotheticalAccountLiquidityInternal
                 profit_apprx = (seize_tokens * exchange_rate // EXP_SCALE * price - rejust_repay_amount * debt_price) // EXP_SCALE
@@ -724,7 +718,7 @@ def profit_simulation(ctk: Dict[str, CtokenInfos], liq_pairs: Dict[str, List[Liq
             token_out = ctk[debt_ctoken].configs.underlying
             routs = gen_new_routs(token_in, token_out)
             swap_tokens, paths = routs.find_routs(pair.repay_amount, pools, swap_func, depth)
-            if swap_tokens <=0 and len(paths) == 0:
+            if swap_tokens <= 0 and len(paths) == 0:
                 continue
             else:
                 routs.paths = paths
@@ -843,7 +837,6 @@ def liquidation_start(index: int, usr: str, ctk: Dict[str, CtokenInfos], block_i
     logger.info(f'liquidation start: {{"index":"{index}", "user":"{usr}", "revenue":{revenue/10**18}, "routs":{routs.print_routs()}, "block_num":{block_infos.block_num}, "params":{params}, "to_addr": "{to_addr}", "gainedAmount": {seized_amount}, "signal":{sig_recv}}}')
 
     # todo: liquidated when an invalid signal is given
-    # todo: conflict with bnb48
     res, prev_index = is_user_liquidated([params[0], to_addr, params[1]])
     if res:
         logger.debug(f'user is liquidated: {{"index":"{prev_index}", "revenue": {revenue}, "params":{params}}}')    
@@ -860,13 +853,8 @@ def liquidation_start(index: int, usr: str, ctk: Dict[str, CtokenInfos], block_i
         price = ctk[ctoken_addr].price.price_current
         price_decimals = send_type.price_decimals
 
-        # for BSC Venus
-        # token_decimals = ctk[ctoken_addr].configs.underlying_decimals 
-        # price = signals.price_scale_inverse(price, token_decimals, price_decimals) / 10**price_decimals * EXP_SCALE
-
-        multiplier = ctk[ctoken_addr].configs.reporter_multiplier 
-        base_units = ctk[ctoken_addr].configs.base_units
-        price = signals.price_scale_inverse(price, base_units, multiplier) / 10**price_decimals * EXP_SCALE
+        args = (price,) + signals.gen_oracle_params(price_decimals, ctk[ctoken_addr].configs)
+        price = signals.price_scale_inverse(*args) / 10**price_decimals * EXP_SCALE
     else:
         price = 1
 
@@ -880,33 +868,14 @@ def liquidation_start(index: int, usr: str, ctk: Dict[str, CtokenInfos], block_i
     # todo: change to router object
     if len(routs.paths) == 0:
         intput = "0x"
+        return []
     else:
-        zero_for_one = 0
-        pool = routs.paths[0]
-        pool_addr = pool.pool_addr
-        token0 = pool.pair[0]
-        token1 = pool.pair[1]
-
-        # varied based on the contract deployed
-        intput = "0x18de0524"
-        intput += str(zero_for_one).zfill(64)  # zero_for_one 
-        intput += hex(params[1])[2:].zfill(64)     # repayAmount 
-        intput += pool_addr.lower()[2:].zfill(64)  # pair
-        intput += token0.lower()[2:].zfill(64)     # token0
-        intput += token1.lower()[2:].zfill(64)     # token1
-        intput += params[0].lower()[2:].zfill(64)  # borrower
-        intput += to_addr.lower()[2:].zfill(64)    # debt_ctoken
-        intput += params[2].lower()[2:].zfill(64)  # col_ctoken
+        intput = contract.gen(params[0], to_addr, params[2], routs.paths)
 
     tx['data'] = bytes.fromhex(intput[2:])
     tx['to'] = bytes.fromhex(P_ALIAS['contract'][2:])
     tx["chainId"] = CONNECTION[NETWORK]['chain_id'] # todo: temp solution
-
-    # todo: move to other place
-    # if send_lock:
-    #     return []
     
-    # todo: conflict with bnb48
     set_user_liquidated(index, [params[0], to_addr, params[1]])
     return sign_sending_tx_to_tasks(index, tx, profit, acc)
 
@@ -1069,7 +1038,7 @@ async def pt_prof_wrap(message):
     # with open("profile" + message["hash"][:8] + ".out", "w") as file:
     #     stats = pstats.Stats(pr, stream=file).sort_stats("cumtime")
     #     stats.print_stats()
-
+    
 
 async def pt(message):
     start = timeit.default_timer()
@@ -1111,10 +1080,7 @@ async def pt(message):
     for r in res:
         token_addr = r[0] # Web3.toChecksumAddress(r[0])
         price = r[1]
-
-        # for BSC Venus
-        # feed_decimals = r[2]
-        # decimals_ua = states.ctokens[token_addr].configs.underlying_decimals  
+        feed_decimals = r[2]
 
         # take venus protocol as an example
         # there are two types of price source, details in https://bscscan.com/address/0x7fabdd617200c9cb4dcf3dd2c41273e60552068a#code
@@ -1123,12 +1089,7 @@ async def pt(message):
         # for liquidation only vTokens are considered, thus "VAI" and "XVS" is ignored
         # Although "vBNB" are not scaled (so do "VAI" and  "XVS"), there is no different if it is passed to the price_scale function
         # currently no vToken are setted manually (tyep 2), see details in signals.py -> prices_setted_manually_test()
-        # new_price = int(signals.price_scale(price, decimals_ua, feed_decimals))
-
-        # for ETH V2 
-        multiplier = states.ctokens[token_addr].configs.reporter_multiplier
-        base_units = states.ctokens[token_addr].configs.base_units
-        new_price = int(signals.price_scale(price, base_units, multiplier))
+        new_price = signals.get_oracle_price(price, feed_decimals, states.ctokens[token_addr].configs)
 
         old_price = states.ctokens[token_addr].price.price_current
         new_delta = new_price / old_price - 1
@@ -1205,13 +1166,13 @@ def get_reserves_value(token_addr, amount, is_col=False):
 
 async def main():
     tasks = [
-        # asyncio.create_task(subscribe_event_light(states.gen_states_filter(reserves_init), users_subscribe_callback, logger, "light_users_sub")),
-        asyncio.create_task(subscribe_event_full(states.gen_states_filter(reserves_init), users_subscribe_callback_full, logger, "full_users_sub")),
+        asyncio.create_task(subscribe_event_light(states.gen_states_filter(reserves_init), users_subscribe_callback, logger, "light_users_sub")),
+        # asyncio.create_task(subscribe_event_full(states.gen_states_filter(reserves_init), users_subscribe_callback_full, logger, "full_users_sub")),
         asyncio.create_task(subscribe_event_light(gen_comet_filter(), comet_subscribe_callback, logger, "light_comet_sub")),
-        # asyncio.create_task(subscribe_event_light(gen_signals_filter(signals), signals_subscribe_callback, logger, "light_price_sub")),
-        asyncio.create_task(subscribe_event_full(gen_signals_filter(signals), signals_subscribe_callback_full, logger, "full_price_sub")),
-        # asyncio.create_task(subscribe_event_light(gen_liquidation_filter(reserves_init), liquidations_subscribe_callback, logger, "light_liquidations_sub")),
-        asyncio.create_task(subscribe_event_full(gen_liquidation_filter(reserves_init), liquidations_subscribe_callback_full, logger, "full_liquidations_sub")),
+        asyncio.create_task(subscribe_event_light(gen_signals_filter(signals), signals_subscribe_callback, logger, "light_price_sub")),
+        # asyncio.create_task(subscribe_event_full(gen_signals_filter(signals), signals_subscribe_callback_full, logger, "full_price_sub")),
+        asyncio.create_task(subscribe_event_light(gen_liquidation_filter(reserves_init), liquidations_subscribe_callback, logger, "light_liquidations_sub")),
+        # asyncio.create_task(subscribe_event_full(gen_liquidation_filter(reserves_init), liquidations_subscribe_callback_full, logger, "full_liquidations_sub")),
 
         asyncio.create_task(subscribe_header_full(on_message, logger)),
 
@@ -1255,8 +1216,6 @@ if __name__ == '__main__':
     logger = Logger(log_file_name=LOG_DIRECTORY + log_infos[0], log_level=LIQUDATION_LOG_LEVEL, logger_name=log_infos[1]).get_log()
     logger.info("Init starts")
     # logger_send_tx = Logger(log_file_name="liquidations_send", log_level=logging.INFO, logger_name="liquidation_send").get_log()
-    send_lock = False
-    send_counter = 0
 
     print("Init varaibles ...")
     # initialize local variable
@@ -1273,28 +1232,21 @@ if __name__ == '__main__':
     liq_onchain.w3_liqcall = Web3LiqListening()
 
     print("Init states from local file ...")
+
+    # Config: protocol selection
+    provider = 'http_xp'
+    w3_liq = Web3CompoundVenues(provider)
+    # w3_liq = Web3CompoundV3()
+    contract = BSCVenusPancakeV2()
+
     # reload users and token infos and sync to latest block
-    # w3_liq = Web3CompoundVenues()
-    w3_liq = Web3CompoundV3()
-
-    accounts = init_accounts(w3_liq)
-    # sender = BnB48Sender()
-    # send_callback = bnb48_callback
-    # send_expire = bnb48_expire
-    sender = FlashSender(w3_liq.w3)
-    send_callback = flash_callback
-    send_expire = flash_expire
-
-    # bnb48 = Bnb48()
-    # bnb48.acc.nonce = w3_liq.w3.eth.get_transaction_count(bnb48.acc.get_address())
-    # bnb_gas_price = 60000000000 # bnb48.query_gas_price()
-    # bnb48_recheck = {}
-
     reserves_init = w3_liq.query_markets_list()
     states = reload_states(reserves_init)
-    # event_vai_repay = VaiState()
-    # states.plug_in = event_vai_repay
-    event_vai_repay = None
+    
+    # Config: protocol plugin selection
+    event_vai_repay = VaiState()
+    # event_vai_repay = None
+    states.plug_in = event_vai_repay
 
     print("Sync latest states and update local file ...")
     try:
@@ -1321,15 +1273,26 @@ if __name__ == '__main__':
     signals = init_signals(w3_liq, reserves_init, states.ctokens)
     block_infos = init_block_infos(w3_liq)
 
+    accounts = init_accounts(w3_liq)
+
+    # Config: sender selection
+    sender = BnB48Sender(w3_liq.w3, states.ctokens['0xA07c5b74C9B40447a954e1466938b865b6BBea36'].price.price_current)
+    send_callback = bnb48_callback
+    send_expire = bnb48_expire
+    # sender = FlashSender(w3_liq.w3)
+    # send_callback = flash_callback
+    # send_expire = flash_expire
+
     send_type = init_send_type(NETWORK)
     if send_type.aggr != '':
-        res, _ = signals.get_tokens_from_aggr(send_type.aggr)
+        res = signals.signal_token_map[send_type.aggr.lower()]
         send_type.price_token = res[0].token
         send_type.price_decimals = res[0].price_decimals 
 
     # router init should after ctoken configs init
-    # routers = SwapV2(ABIUniV2('pancakge_v2'))
-    routers = SwapV3(ABIUniV3())
+    # Config: router selection
+    routers = SwapV2(ABIUniV2('pancakge_v2'), 25, provider_type=provider)
+    # routers = SwapV3(ABIUniV3())
     init_router_pools(routers, reserves_init, states.ctokens)
     print(routers.print_liq_pool())
 

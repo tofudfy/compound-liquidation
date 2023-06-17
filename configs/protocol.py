@@ -1,3 +1,4 @@
+import time
 from web3 import Web3
 from typing import List, Dict, Tuple
 from configs.web3_liq import Web3Liquidation, ABICompoundVenues, ABICompoundV3
@@ -49,19 +50,19 @@ class Web3CompoundVenues(Web3Liquidation):
             token_sc = self.gen_ctokens(ctoken_underlying)
             symbol = token_sc.functions.symbol().call()
             underlying_decimals = token_sc.functions.decimals().call() 
-        except:
+        except Exception as e:
             if ctoken_addr == "0xA07c5b74C9B40447a954e1466938b865b6BBea36":
                 ctoken_underlying = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"  # wBNB
                 ctoken_underlying_ext = "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB"
                 symbol = "vBNB"  # symbol input to getFeed
                 underlying_decimals = 18
             else:
-                # todo: extend
-                print(ctoken_addr)
+                # todo: extend through error?
+                print(f'abnormal token {ctoken_addr} Or error {e}')
 
         price_sc = self.gen_price_oracle()
 
-        #  reporter = price_sc.functions.getFeed(symbol).call(block_identifier=identifier)  # deprecated
+        # reporter = price_sc.functions.getFeed(symbol).call(block_identifier=identifier)  # deprecated
         # struct TokenConfig {
         #     /// @notice asset address
         #     address asset;
@@ -217,6 +218,7 @@ def complete_ctokens_configs_info(obj: Dict[str, CtokenInfos], w3_liq: Web3Compo
         '''
         ctoken_configs = w3_liq.query_ctokens_configs(ctoken_addr, identifier)
         obj[ctoken_addr].configs = ctoken_configs
+        time.sleep(0.01)
 
 
 def complete_ctokens_risks(obj: Dict[str, CtokenInfos], w3_liq: Web3Liquidation, reserves: List):
@@ -224,10 +226,12 @@ def complete_ctokens_risks(obj: Dict[str, CtokenInfos], w3_liq: Web3Liquidation,
         ctoken_contract = w3_liq.gen_ctokens(ctoken_addr)
         obj[ctoken_addr].risks.reserve_factor = ctoken_contract.functions.reserveFactorMantissa().call() # todo: block_identifier=identifier
         obj[ctoken_addr].risks.exchange_rate = ctoken_contract.functions.exchangeRateStored().call() # block_identifier=identifier
+        time.sleep(0.01)
 
         # todo: venus protocol may have different interface
         try:
             obj[ctoken_addr].risks.protocol_seized = ctoken_contract.functions.protocolSeizeShareMantissa().call() # block_identifier=identifier
+            time.sleep(0.01)
         except:
             pass
 

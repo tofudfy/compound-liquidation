@@ -7,10 +7,10 @@ from types_light import LogReceiptLight, converter
 # NOTICE: modify the argument to configure network and project
 # configs: protocol
 PROVIDER_TYPE = 'ipc'
-NETWORK = "Ethereum"
-SELECTOR = 'v2'
-# NETWORK = 'BSC'
-# SELECTOR = 'venus'
+# NETWORK = "Ethereum"
+# SELECTOR = 'v2'
+NETWORK = 'BSC'
+SELECTOR = 'venus'
 
 # utils: protocol constant
 EXP_SCALE = 10 ** 18
@@ -58,9 +58,14 @@ CONNECTION = {
         'http2': "https://bsc.getblock.io/51c4e58e-a3dd-4708-a298-bbd69bc1be37/mainnet/",
         'http3': "https://few-autumn-asphalt.bsc.discover.quiknode.pro/64bec924a8164cc619888113074e0c91b738963d/",
         'http4': "https://withered-crimson-choice.bsc.discover.quiknode.pro/ed564a1ea9c1b5543f56c6338d742d3e260c838b/",
+        'http5': "https://purple-quiet-snow.bsc.discover.quiknode.pro/459b37d8b2753ea10e6c68d0bf48612af60b8bc6/",
         'http_local': "http://127.0.0.1:9545",
         'ws': "wss://skilled-twilight-lambo.bsc.discover.quiknode.pro/6954660fddce3df1513d923a32e91364dcb95659/",
         'http_ym': "https://cool-skilled-surf.bsc.discover.quiknode.pro/bc77724f837002bf73e399f13070bf8772923f8c/",
+        'http_bh': "https://red-floral-isle.bsc.discover.quiknode.pro/8a747ed5a4995c01df6d9bfb87af1950c50a53bc/",
+        'http_sq': "https://restless-compatible-replica.bsc.discover.quiknode.pro/5f5319206b948888b3a54b091d8060d8878d3be4/",
+        'http_qy': "https://bitter-bold-log.bsc.discover.quiknode.pro/dc0a3950da7629d8ee3384709a0bc03f7c43b78e/",
+        'http_xp': "https://weathered-methodical-layer.bsc.discover.quiknode.pro/5a7b5d47fb1d2ac61d6ad29acdf2aac08d8d36c9/",
         'ws_local': "ws://localhost:9546",
         'ws_ym': "wss://bsc.getblock.io/51c4e58e-a3dd-4708-a298-bbd69bc1be37/mainnet/",
         'light': {
@@ -103,7 +108,8 @@ COMPOUND = {
             'health_factor_threshold': 1,
             'comet': "0xfD36E2c2a6789Db23113685031d7F16329158384",
             'vai': "0x004065D34C6b18cE4370ced1CeBDE94865DbFAFE",
-            'price_oracle': "0x7FabdD617200C9CB4dcf3dd2C41273e60552068A",
+            'price_oracle': "0x6592b5DE802159F3E74B2486b091D11a8256ab8A",
+            # 'price_oracle': "0x7FabdD617200C9CB4dcf3dd2C41273e60552068A",  # deprecated at May 2023
             'base_currency': "USD",
             'signals': ['aggregator'],
             'log_file': {
@@ -114,7 +120,7 @@ COMPOUND = {
             'comet_configs_file': "users/comet_configs_bsc_compound_venus.json",
             'users_file': "users/users_bsc_compound_venus.json",
             'users_file_status': 1,  # 1 for continue; 0 for init from template
-            'contract': "0x57abA600c3880d73b42B1197B90224bA8e1e0C5A"
+            'contract': "0x75efFC31fc16Cf1fd8747dbc0c20C509c4b9740E"
         }
     }
 }

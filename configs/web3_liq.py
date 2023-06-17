@@ -36,7 +36,8 @@ class ABICompoundVenues(ABICompound):
         self.source_interface = json_file_load(self.path + "/contracts/EACAggregatorProxy.json")['abi']
         self.vai_controller = json_file_load(self.path + "/contracts/VAIController.json")['abi']
         self.proxy_liquidator = json_file_load(self.path + '/contracts/Liquidator.json')['abi'] 
-        self.bot = json_file_load(self.path + '/contracts/VenusFlashLiquidatorBot.json')['abi']
+        # self.bot = json_file_load(self.path + '/contracts/VenusFlashLiquidatorBot.json')['abi']
+        self.bot = json_file_load(self.path + '/contracts/VenusFlashLiquidatorBot-multi-hop.json')['abi']
 
 
 # currently is designed for compound specifically

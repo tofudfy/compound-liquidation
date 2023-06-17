@@ -23,6 +23,7 @@ from transaction.send import init_send_type
 from compound import LiqPair, liquidation_simulation, profit_simulation, signal_calculate_health_factor, signal_simulate_health_factor, start_multi_process, DESIRED_PROFIT_SCALE
 from utils import TxFees, FakeLogger, FakePool, state_diff_aggr_price, subscribe_event_light, send_msg_tenderly, state_diff_uniswap_anchor_price
 from tx import create_type0_tx, init_accounts
+from bots import BSCVenusPancakeV2
 
 
 SIGNAL_MESSAGE = {'type': '0x0', 'nonce': '0x133798a', 'gasPrice': '0x78ace58d37', 'maxPriorityFeePerGas': None, 'maxFeePerGas': None, 'gas': '0x7a120', 'value': '0x0', 'input': '', 'v': '0x135', 'r': '0xe2611d8e66e2886d4fe9a3ec66a42fa9f4d541c372cf138972f0483e4f04efd4', 's': '0x52d45d82218390ac665912ec9ee85a71636e411955c8b01a035792dfb7cffd3', 'to': '0xc6d82423c6f8b0c406c1c34aee8e988b14d5f685', 'hash': '0xd845e76f1f20ec68ff18190be6bb7186731f9a9ec6c52332d0b3ecc0362c3a69', 'from': '0x250abd1d4ebc8e70a4981677d5525f827660bde4'}
@@ -63,13 +64,13 @@ def subscribe_callback(response: LogReceiptLight):
 
 
 async def cal_users_states_test():
-    # w3_liq = Web3CompoundVenues('http') 
-    w3_liq = Web3CompoundV3('http2')
+    w3_liq = Web3CompoundVenues('http4') 
+    # w3_liq = Web3CompoundV3('http2')
 
     # case4(miss): 
-    block_num = 17415388 - 1
-    user = "0x40b46A4d61cDf850C1C28320D02f7Ee0696DCb67"
-    sig_hash = ""
+    block_num = 29166645 - 1
+    user = "0x87a7C9c299b4c894e4BF126DB1F796219B6aDc05"
+    sig_hash = "0x69d2bbeacf10c1fe485f50cd86a5275655d8eb488824e4a75b455ebbd3822274"
 
     # Step1: find short fall
     comet = w3_liq.gen_comptroller()
@@ -83,7 +84,7 @@ async def cal_users_states_test():
     reserves_trim = list(states.users_states[user].reserves.keys())
 
     # patch for routers
-    for ctoken in ["0x39AA39c021dfbaE8faC545936693aC917d5E7563", "0x4Ddc2D193948926D02f9B1fE9e1daa0718270ED5"]:
+    for ctoken in ["0xA07c5b74C9B40447a954e1466938b865b6BBea36", "0x95c78222B3D6e262426483D42CfA53685A67Ab9D"]: # ["0x39AA39c021dfbaE8faC545936693aC917d5E7563", "0x4Ddc2D193948926D02f9B1fE9e1daa0718270ED5"]:
         if ctoken not in reserves_trim: 
             reserves_trim.append(ctoken)
 
@@ -120,8 +121,8 @@ async def cal_users_states_test():
 
     # Step6: fetch router infos onchain 
     # router init should after ctoken configs init
-    # routers = SwapV2(ABIUniV2('pancakge_v2'))
-    routers = SwapV3(ABIUniV3())
+    routers = SwapV2(ABIUniV2('pancakge_v2'), 25)
+    # routers = SwapV3(ABIUniV3())
     init_router_pools(routers, reserves_trim, states.ctokens, "latest")
 
     # Step7.1: calculate liquidations of single user
@@ -149,6 +150,8 @@ async def cal_users_states_test():
         routs: Routs = pair_with_routs[1]
         for path in routs.paths:
             print(path.__dict__)
+    else:
+        routs = None
 
     # Step7.2: calculate liquidations of multiple users
     accounts = init_accounts(w3_liq)
@@ -169,8 +172,8 @@ async def cal_users_states_test():
 
     # onchain replay
     # res = liquidate_from_proxy_test(w3_liq, sig_hash, to_addr, liquidation_params, block_num)
-    res = liquidate_directly_test(w3_liq, states.ctokens, accounts[0].get_address(), sig_hash, to_addr, liquidation_params, block_num)
-    # res = liquidate_from_contract_test(w3_liq, sig_hash, to_addr, liquidation_params, block_num)
+    # res = liquidate_directly_test(w3_liq, states.ctokens, accounts[0].get_address(), sig_hash, to_addr, liquidation_params, block_num)
+    res = liquidate_from_contract_test(w3_liq, sig_hash, to_addr, liquidation_params, block_num, routs)
     print(res)
 
 
@@ -237,6 +240,28 @@ def liquidate_from_proxy_test(w3_liq: Web3Liquidation, sig_hash: str, to_addr: s
     return send_msg_tenderly(tx_liq, state_diff, block_num)
 
 
+def liquidate_from_contract_test(w3_liq: Web3Liquidation, sig_hash: str, to_addr: str, params: List, block_num, rout=None):
+    # todo: make correction
+    tx = liquidate_from_flash_loan(to_addr, params, rout)
+
+    # send transaction to chain directly
+    # async with connect(URL['light']['url'],
+    #         extra_headers={'auth': URL['light']['auth']}) as ws:
+    #     coroutines = sign_sending_tx_to_tasks(ws, "", tx, FakeLogger())
+    #     tasks = [asyncio.create_task(coroutine) for coroutine in coroutines]
+    #     await asyncio.gather(*tasks)
+    
+    # simulation transaction on tenderly
+    state_diff, fees, account_addr = state_diff_aggr_price(w3_liq, sig_hash, to_addr, params, account_addr="0x4153aEf7bf3c7833b82B8F2909b590DdcF6f8c15")
+
+    tx['gasPrice'] = fees.gas_price
+    tx['maxPriorityFeePerGas'] = fees.mev
+    tx['maxFeePerGas'] = fees.max_fee
+    tx['chainId'] = 56
+    tx['from'] = account_addr
+    return send_msg_tenderly(tx, state_diff, block_num)
+
+
 def liquidate_directly_test(w3_liq: Web3Liquidation, ctk: Dict[str, CtokenInfos], account_addr: str, sig_hash: str, to_addr: str, params: List, block_num):
     # simulation transaction on tenderly
     if sig_hash != "":
@@ -270,37 +295,13 @@ def liquidate_directly_test(w3_liq: Web3Liquidation, ctk: Dict[str, CtokenInfos]
     return send_msg_tenderly(tx_nex, state_diff, block_num)
 
 
-def liquidate_from_flash_loan(to_addr, params, rout: SwapV3, ctk: CtokenConfigs):
-    debt_ctoken = to_addr
-    col_ctoken = params[2]
-    token0 = ctk[col_ctoken].configs.underlying
-    token1 = ctk[debt_ctoken].configs.underlying
-    
-    # if token0 is collateral, zero for one is align with is_token0
-    key, zero_for_one = rout.gen_pool_key(token0, token1)
-    if not zero_for_one:
-        temp = token1
-        token1 = token0
-        token0 = temp
-
-    pool = rout.pools.get(key, None)
-    pool_addr = pool.pool_addr
-
+# RoutsCompV2
+def liquidate_from_flash_loan(to_addr, params, rout: Routs):
     gas_fee = 5000000000 
-    tx = create_type0_tx(gas_fee, gas=3000000)
-    print(zero_for_one, params[1], pool_addr, token0, token1, params[0], to_addr, params[2])
+    tx, _ = create_type0_tx(gas_fee, 0, 0, gas=3000000)
 
-    # varied based on the contract deployed
-    intput = "0x18de0524"
-    intput += hex(zero_for_one)[2:].zfill(64)  # zero_for_one
-    intput += hex(params[1])[2:].zfill(64) # repayAmount 
-    # intput += hex(-params[1] & (2**256-1))[2:] # repayAmount
-    intput += pool_addr.lower()[2:].zfill(64)  # pair
-    intput += token0.lower()[2:].zfill(64)     # token0
-    intput += token1.lower()[2:].zfill(64)     # token1
-    intput += params[0].lower()[2:].zfill(64)  # borrower
-    intput += to_addr.lower()[2:].zfill(64)    # debt_ctoken
-    intput += params[2].lower()[2:].zfill(64)  # col_ctoken
+    bot = BSCVenusPancakeV2()
+    intput = bot.gen(params[0], to_addr, params[2], rout.paths)
     print(intput)
 
     tx['data'] = intput

@@ -1,5 +1,6 @@
 import os
 import math
+import time
 from web3 import Web3
 from typing import List, Dict
 from itertools import permutations
@@ -86,8 +87,21 @@ ROUTS_TOKENS = {
         "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",  # USDC
         "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",  # WETH
         "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+    ],
+    "BSC": [
+        "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",  # WBNB
+        "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56"   # BUSD 
     ]
 }
+
+class Path(object):
+    def __init__(self, pool_addr: str, token0: str, token1: str, is_zero_for_one: int, fee: int, amount_out: int):
+        self.pool_addr = pool_addr
+        self.fee = fee
+        self.token0 = token0
+        self.token1 = token1
+        self.is_zero_for_one = is_zero_for_one 
+        self.amount_out = amount_out
 
 
 class Routs(object):
@@ -95,7 +109,7 @@ class Routs(object):
         self.token_in = token_in
         self.token_out = token_out
         self.rout_tokens = ROUTS_TOKENS[NETWORK]
-        self.paths: List[Pool] = []
+        self.paths: List[Path] = []
 
         if self.token_in in self.rout_tokens: 
             self.rout_tokens.remove(self.token_in)
@@ -109,15 +123,24 @@ class Routs(object):
         token_out_index = 1 - token_in_index 
         pool: Pool = pools.get(key, None)
 
+        path = None
         if pool is not None: # and pool.check_liquidity(amount_out, debt_token_index):
             try:
                 amount_in = swap_simulation(pool, amount_out, token_out_index)
+                path = Path(
+                    pool_addr=pool.pool_addr,
+                    fee=pool.fee,
+                    token0=pool.pair[0],
+                    token1=pool.pair[1],
+                    is_zero_for_one=token_out_index,
+                    amount_out=amount_out
+                )
             except:
                 amount_in = -1
         else:
             amount_in = -1
 
-        return amount_in, pool
+        return amount_in, path
 
     def find_routs(self, final_out, pools, swap_simulation, d):
         final_in = -1
@@ -132,11 +155,11 @@ class Routs(object):
                 for j in range(len(path)-1):
                     token_out = path[j]
                     token_in = path[j+1]
-                    amount_in, pool = self.single_rout_simulation(token_in, token_out, amount_out, swap_simulation, pools)
-                    if amount_in == -1:
+                    amount_in, path_infos = self.single_rout_simulation(token_in, token_out, amount_out, swap_simulation, pools)
+                    if amount_in == -1 or path_infos is None:
                         break
                     else:
-                        paths_temp.append(pool)
+                        paths_temp.append(path_infos)
                         amount_out = amount_in
                 
                 if amount_in != -1 and (amount_in < final_in or final_in == -1):
@@ -162,8 +185,8 @@ class RoutsCompV2(Routs):
     def find_routs(self, final_out, pools, swap_simulation, d):
         if (self.token_out == self.token_in) and (self.token_out in COMP_NOT_DEBT_COL_AT_SAME):
             return -1, []
-        elif self.token_out == self.token_in:
-            return final_out, []
+        # elif self.token_out == self.token_in:
+        #     return final_out, []
         else:
             return super().find_routs(final_out, pools, swap_simulation, d)
 
@@ -199,9 +222,10 @@ class Web3Swap(object):
 
 
 class SwapV2(Web3Swap):
-    def __init__(self, abi: ABIUniV2, provider_type=PROVIDER_TYPE):
+    def __init__(self, abi: ABIUniV2, fee, provider_type=PROVIDER_TYPE):
         super().__init__(abi, provider_type)
         self.pools: Dict[str, Pool] = {}
+        self.fee = fee
 
     def query_max_liq_pool(self, pair, identifier="latest") -> Pool:
         factory = self.gen_factory()
@@ -211,7 +235,7 @@ class SwapV2(Web3Swap):
         
         pool_sc = self.gen_pool(pair_addr)
         res = pool_sc.functions.getReserves().call()
-        return Pool(pair, pair_addr, res, 0)
+        return Pool(pair, pair_addr, res, self.fee)
     
     def add_liq_pool(self, pair, identifier="latest"):
         key, token0_index = self.gen_pool_key(*pair)
@@ -231,13 +255,18 @@ class SwapV2(Web3Swap):
             res[k] = v.__dict__
         return res
 
-    def swap_simulation(self, pool: Pool, amount: int, debt_token_index: int):
-        x = pool.liquidity[debt_token_index] 
-        y = pool.liquidity[1-debt_token_index]
-        if x < amount:
+    def swap_simulation(self, pool: Pool, amount_out: int, token_out_index: int):
+        x = pool.liquidity[token_out_index] 
+        y = pool.liquidity[1-token_out_index]
+        if x < amount_out:
             return -1
 
-        swap_tokens = y * amount * 10000 // ((x - amount) * 9975) + 1
+        # adjusted_amount_out =  amount_out * (10000 - pool.fee) 
+        # numerator =  adjusted_amount_out * y 
+        # denominator = x * 10000 + adjusted_amount_out 
+        # swap_tokens_comp = numerator / denominator 
+
+        swap_tokens = y * amount_out * 10000 // ((x - amount_out) * (10000 - pool.fee)) + 1
         return swap_tokens
 
 
@@ -300,9 +329,6 @@ class SwapV3(Web3Swap):
             res[k] = v.__dict__
         return res
 
-    # def swap_simulation(self, pool: Pool, amount: int, debt_token_index: int):
-    #     return 0
-
     def swap_simulation(self, pool: Pool, amount_out: int, token_out_index: int):
         quoter = self.gen_quoter()
         pair = pool.pair
@@ -345,6 +371,7 @@ def init_router_pools(w3_rout: SwapV3, reserves: List, ctoken_configs: Dict[str,
             token0 = ctoken_configs[reserves[i]].configs.underlying
             token1 = ctoken_configs[reserves[j]].configs.underlying
             w3_rout.add_liq_pool([token0, token1], identifier=identifier)
+            time.sleep(0.01)
 
 
 def gen_pool_key(token0, token1):
@@ -366,7 +393,7 @@ def init_router_pools_test():
     ctokens = new_ctokens_infos(reserves)
     complete_ctokens_configs_info(ctokens, w3_liq, reserves)
 
-    # routers = SwapV2(ABIUniV2('pancakge_v2'))
+    # routers = SwapV2(ABIUniV2('pancakge_v2'), 25)
     routers = SwapV3(ABIUniV3())
 
     init_router_pools(routers, reserves, ctokens)

@@ -6,8 +6,6 @@ from transaction.types import create_self_transfer, create_type0_tx, create_type
 from transaction.bnb48 import Bnb48
 from transaction.account import SECRET_KEYS, AccCompound
 
-BNB_GAS_PRICE = 60000000000
-
 
 def init_send_type(net):
     if net == "Polygon":
@@ -66,8 +64,15 @@ class SendType(object):
         return tx, gas_fee
 
 
-class WsSender(object):
+class Sender(object):
+    def __init__(self) -> None:
+        self.lock = False
+        self.counter = 0
+
+
+class WsSender(Sender):
     def __init__(self, ws) -> None:
+        super().__init__()
         self.ws = ws
 
     async def send_tx_task(self, signed_tx_raw):
@@ -81,6 +86,9 @@ class WsSender(object):
         await asyncio.sleep(0.001)
 
     async def send_transactions(self, results):
+        if self.lock and len(results) == 0:
+            return
+
         tasks = []
         for res in results:
             signed_tx_raw = res[1]
@@ -89,49 +97,81 @@ class WsSender(object):
         await asyncio.gather(*tasks)
 
 
-
-class BnB48Sender(object):
-    def __init__(self) -> None:
+class BnB48Sender(Sender):
+    def __init__(self, w3, bnb_price_with_decimals) -> None:
+        super().__init__()
         self.bnb48 = Bnb48()
+        self.w3_bnb48 = w3
+        self.bnb_price = bnb_price_with_decimals / 10**18
         self.storage = {}
 
-    async def send_transactions(self, results, expire, callback, signal_recv=None):
-        if len(results) == 0:
+        self.bnb48.acc.nonce = self.w3_bnb48.eth.get_transaction_count(self.bnb48.acc.get_address())
+        self.balance = self.w3_bnb48.eth.get_balance(self.bnb48.acc.get_address())
+        self.bnb_gas_price = self.bnb48.query_gas_price()
+
+    def x(self, profits, txs, expire, callback):
+        bnb_cost = 0.5 * profits / self.bnb_price
+        min_balance = self.balance * 22000/21000
+        if bnb_cost > min_balance:
+            bnb_cost = min_balance
+        
+        mev_gas_price = bnb_cost / 21000
+        if mev_gas_price < self.bnb_gas_price:  # at least 0.00126 BNB = 0.4 USD
             return
 
-        if signal_recv is not None:
-            txs = [
-                signal_recv['raw_tx']
-            ]
-        else:
-            txs = []
+        tx_mev = create_self_transfer(mev_gas_price, self.bnb48.acc)
+        txs = tx_mev + txs
+        error_code = self.bnb48.send_puissant(txs, expire)
+        callback(error_code, mev_gas_price, txs, expire)
+    
+    async def send_transactions(self, results, expire_raw, callback, signal_recv=None):
+        if self.lock and len(results) == 0:
+            return
 
+        # todo: redundent operation, depend on the design of func liquidation_start
         dedup = {}
-        profits = 0
+        results_new = []
         for res in results:
             index = res[0]
             signed_tx_raw = res[1]
             profit = res[2]
 
-            txs.append(signed_tx_raw.hex())
-
+            # for bnb48 only need one signer
             if dedup.get(index, None) is None:
                 dedup[index] = 1
-                profits += profit
-        
-        bnb_cost = 0.8 * profits / 320
-        if bnb_cost > 0.06:
-            bnb_cost = 0.06 
-        
-        mev_gas_price = bnb_cost / 21000
-        if mev_gas_price >= BNB_GAS_PRICE:  # at least 0.00126 BNB = 0.4 USD
-            txs = [create_self_transfer(mev_gas_price, self.bnb48.acc)] + txs
-            error_code = self.bnb48.send_puissant(txs, expire)
-            callback(error_code, mev_gas_price, txs, expire)
+                results_new.append([profit, signed_tx_raw])
+
+        sorted_txs_liq = sorted(results_new, reverse=True)
+
+        # when is triggered by signal
+        if signal_recv is not None:
+            txs = [
+                signal_recv['raw_tx']
+            ]
+            delay = 6  # 2 block delays in BSC
+            profits = 0
+            for res in sorted_txs_liq[:2]:
+                profit = res[0]
+                signed_tx_raw = res[1]
+
+                profits += profit 
+                txs.append(signed_tx_raw.hex())
+            self.x(profits, txs, expire_raw + delay, callback)
+
+        # 1. when is triggered by sig but sig is not recved by bnb48 validator; 2. not triggered by sig
+        delay = 60  # delay for rotation of 
+        for res in sorted_txs_liq[:2]:
+            profit = res[0]
+            signed_tx_raw = res[1]
+            self.x(profit, [signed_tx_raw], expire_raw + delay, callback) 
+            # todo: ?
+            self.bnb48.acc.nonce += 1
+
+        self.bnb48.acc.nonce += 1
 
         await asyncio.sleep(0.001)
     
-    def update(self, w3, validator: str, block_number: int, block_timestamp: int):
+    def update(self, validator: str, block_number: int, block_timestamp: int, bnb_price_with_decimals: int):
         if validator in BNB48:
             is_bnb48 = True
         else:
@@ -142,24 +182,34 @@ class BnB48Sender(object):
             res = self.get_puissant_status(id)
             print(f'bnb48 status:{{"block_num": {block_number}, "is_bnb48": {is_bnb48}, "id": "{id}", "response": {res}}}')
 
+            if 'value' in res and 'status' in res['value'] and "Dropped" in res['value']['status']:
+                del_list.append(id) 
+                continue
+
             if exp_time < block_timestamp:
                 del_list.append(id)
 
         for id in del_list:
             self.storage.pop(id)
 
-        # update nonce
-        self.bnb48.acc.nonce = w3.eth.get_transaction_count(self.bnb48.acc.get_address())
+        # update nonce and balance
+        self.bnb48.acc.nonce = self.w3_bnb48.eth.get_transaction_count(self.bnb48.acc.get_address())
+        self.balance = self.w3_bnb48.eth.get_balance(self.bnb48.acc.get_address())
+        self.bnb_price = bnb_price_with_decimals / 10**18
 
 
-class FlashSender(object):
+class FlashSender(Sender):
     def __init__(self, w3) -> None:
+        super().__init__()
         sender = AccCompound(SECRET_KEYS['Flash'][0])
         flashbot(w3, sender.account)
         self.w3_flash = w3
 
     # https://github.com/flashbots/web3-flashbots/blob/master/examples/simple.py
     async def send_transactions(self, results, expire, callback, signal_recv=None):
+        if self.lock and len(results) == 0:
+            return
+        
         for res in results:
             index = res[0]
             signed_tx_raw = res[1]
@@ -197,5 +247,5 @@ class FlashSender(object):
 
         await asyncio.sleep(0.001)
 
-    def update(self, w3, validator, block_number, block_timestamp):
+    def update(self, validator, block_number, block_timestamp, bnb_price):
         pass

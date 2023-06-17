@@ -101,8 +101,9 @@ async def subscribe_header_full(callback, logger: Logger, sub_name="full_header_
 
 
 async def subscribe_full(json_rpc, callback, logger, sub_name):
-    ws = WSconnect(CONNECTION[NETWORK]['ws_local'])
-    # ws = WSconnect(CONNECTION[NETWORK]['ws'], ssl=SSL_CTX)
+    # todo
+    # ws = WSconnect(CONNECTION[NETWORK]['ws_local'])
+    ws = WSconnect(CONNECTION[NETWORK]['ws_ym'], ssl=SSL_CTX)
 
     counter = 0
     while True:
@@ -344,8 +345,8 @@ def state_diff_aggr_price(w3_liq: Web3Liquidation, sig_hash: str, to_addr: str, 
     block_num = tx_sig['blockNumber']
     aggregator = tx_sig['to']
     gas_price = tx_sig['gasPrice']
-    mev = tx_sig['maxPriorityFeePerGas'] 
-    max_fee = tx_sig['maxFeePerGas']
+    mev = tx_sig.get('maxPriorityFeePerGas', 0)
+    max_fee = tx_sig.get('maxFeePerGas')
     fees = TxFees(
         gas_price=gas_price,
         mev=mev,
@@ -507,69 +508,6 @@ def call_bundle(w3_liq: Web3Liquidation, url: str, sig_hash: str, to_addr: str, 
 '''
 
 
-def gen_contract_data():
-    """
-    [2023-04-16 21:35:05.116] - [line:584] - INFO:
-    liquidation start: {
-        "index":"1b2af322808be0448edfe7b88ca7eb32", 
-        "user":"0x9109358674f1c9a1a945a1d9880fb7ef1ddc43a3", 
-        "revenue":2.656284532361661, 
-        "block_num":27399446, 
-        "params":['0x9109358674f1c9a1a945a1d9880fb7ef1ddc43a3', 77361501995088862, '0xfD5840Cd36d94D7229439859C0112a4185BC0255'], 
-        "to_addr": "0xA07c5b74C9B40447a954e1466938b865b6BBea36", 
-        "gainedAmount": 131441338183, 
-        "signal":"0xf90665fe402a9db7e0ada14b8374d679181a06d335bff2dbe4c3957bc07a145f"}
-    """
-    params_liq = ['0x9109358674F1C9a1a945a1d9880fb7EF1DDC43a3', 77361501995088862, '0xfD5840Cd36d94D7229439859C0112a4185BC0255']
-    borrower = params_liq[0]
-    repay_amount = params_liq[1]
-    
-    debt_ctoken = "0xA07c5b74C9B40447a954e1466938b865b6BBea36"
-    col_ctoken = params_liq[2]
-    token0 = "0x55d398326f99059fF775485246999027B3197955" # states.ctokens[debt_ctoken].configs.underlying
-    token1 = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c" # states.ctokens[col_ctoken].configs.underlying
-    
-    zero_for_one = True
-    pool_addr = "0x1111111111111111111111111111111111111111"
-
-    function_signature = "swap(bool,uint256,address,address,address,address,address,address)"
-
-    # Compute the function selector
-    function_hash = hashlib.sha3_256(function_signature.encode()).hexdigest()[:8]
-    print(f"Function selector: {function_hash}")
-
-    # Define input parameters
-    params = (
-        zero_for_one,  # zeroForOne
-        repay_amount,  # amount
-        pool_addr,  # pair
-        token0,  # token0
-        token1,  # token1
-        borrower,  # borrower
-        debt_ctoken,  # repayCToken
-        col_ctoken,  # seizeCToken
-    )
-
-    # Encode input parameters
-    encoded_params = encode(["bool", "uint256", "address", "address", "address", "address", "address", "address"], params)
-    print(f"Encoded parameters: {encoded_params.hex()}")
-
-    # Assemble the data
-    data = f"0x{function_hash}{encoded_params.hex()}"
-    print(f"Data: {data}")
-
-    intput = "0x1d249383"
-    intput += hex(zero_for_one)[2:].zfill(64)  # zero_for_one 
-    intput += hex(-params_liq[1] & (2**256-1))[2:] # repayAmount
-    intput += pool_addr.lower()[2:].zfill(64)  # pair
-    intput += token0.lower()[2:].zfill(64)     # token0
-    intput += token1.lower()[2:].zfill(64)     # token1
-    intput += params_liq[0].lower()[2:].zfill(64)  # borrower
-    intput += debt_ctoken.lower()[2:].zfill(64)    # debt_ctoken
-    intput += params_liq[2].lower()[2:].zfill(64)  # col_ctoken
-    print(intput)
-
-
 def test1():
     w3_liq = Web3Liquidation('http')
     sig_hash = "0xcc91742384aab7631e63959731cd1ffd9253d5a7f92214d1e6ae11f2a203abe5"
@@ -620,8 +558,6 @@ def test2():
 if __name__ == "__main__":
     # test1()
     # test2()
-
-    # gen_contract_data()
 
     # res= send_tenderly_simulate_bundle_gateway(TEST_BUNDLE)
     res = send_tenderly_simulate_bundle_simulator(TEST_BUNDLE[0])

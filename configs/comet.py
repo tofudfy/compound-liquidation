@@ -92,6 +92,7 @@ def init_comet_configs(w3_liq: Web3Liquidation, reserves: List, block_num: int):
     for ctoken_addr in reserves:
         res = comptroller.functions.markets(ctoken_addr).call()
         ctokens_cf[ctoken_addr] = res[1]
+        time.sleep(0.01)
 
     return CometConfigs(liquidation_incentive, closs_factor, ctokens_cf, block_num)
 
