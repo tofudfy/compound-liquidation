@@ -5,7 +5,6 @@ import timeit
 import requests
 import hashlib
 import queue
-import ssl
 
 from eth_abi import encode
 from web3 import Web3
@@ -27,7 +26,6 @@ DEV_ALL = {
     "BSC": 0
 }
 DEV = DEV_ALL[NETWORK]
-SSL_CTX = ssl._create_unverified_context()
 
 class FakeLogger(object):
     def __init__(self) -> None:
@@ -85,26 +83,22 @@ class WSconnect(object):
 
 
 # https://docs.infura.io/infura/networks/ethereum/json-rpc-methods/subscription-methods/eth_subscribe
-async def subscribe_event_full(filt, callback, logger: Logger, sub_name="full_event_sub"):
+async def subscribe_event_full(ws_full, filt, callback, logger: Logger, sub_name="full_event_sub"):
     json_rpc = {"id": 1, "jsonrpc": "2.0", "method": "eth_subscribe", "params": ["logs", filt]}
-    await subscribe_full(json_rpc, callback, logger, sub_name)
+    await subscribe_full(ws_full, json_rpc, callback, logger, sub_name)
 
 
-async def subscribe_tx_full(callback, logger: Logger, sub_name="full_pendTx_sub"):
+async def subscribe_tx_full(ws_full, callback, logger: Logger, sub_name="full_pendTx_sub"):
     json_rpc = {"id": 1, "jsonrpc": "2.0", "method": "eth_subscribe", "params": ["newPendingTransactions"]}
-    await subscribe_full(json_rpc, callback, logger, sub_name)
+    await subscribe_full(ws_full, json_rpc, callback, logger, sub_name)
 
 
-async def subscribe_header_full(callback, logger: Logger, sub_name="full_header_sub"):
+async def subscribe_header_full(ws_full, callback, logger: Logger, sub_name="full_header_sub"):
     json_rpc = {"id": 1, "jsonrpc": "2.0", "method": "eth_subscribe", "params": ["newHeads"]}
-    await subscribe_full(json_rpc, callback, logger, sub_name)
+    await subscribe_full(ws_full, json_rpc, callback, logger, sub_name)
 
 
-async def subscribe_full(json_rpc, callback, logger, sub_name):
-    # todo
-    # ws = WSconnect(CONNECTION[NETWORK]['ws_local'])
-    ws = WSconnect(CONNECTION[NETWORK]['ws_ym'], ssl=SSL_CTX)
-
+async def subscribe_full(ws, json_rpc, callback, logger, sub_name):
     counter = 0
     while True:
         if counter >= 3:
@@ -124,13 +118,12 @@ async def subscribe_full(json_rpc, callback, logger, sub_name):
             continue
 
 
-async def subscribe_event_light(filt, callback, logger: Logger, sub_name="light_event_sub"):
+async def subscribe_event_light(ws_light, filt, callback, logger: Logger, sub_name="light_event_sub"):
     sub_infos = json.dumps({
         'm': 'subscribe',
         'p': 'receipts',
         'event_filter': filt
     })
-    ws = WSconnect(CONNECTION[NETWORK]['light']['url'], {'auth': CONNECTION[NETWORK]['light']['auth']})
     
     counter = 0
     while True:
@@ -139,20 +132,19 @@ async def subscribe_event_light(filt, callback, logger: Logger, sub_name="light_
             raise Exception(f"subscribe {sub_name} to light node too many times")            
 
         try:
-            await subscribe_to_node(ws, sub_infos, callback, logger, sub_name)
+            await subscribe_to_node(ws_light, sub_infos, callback, logger, sub_name)
         except Exception as e:
             logger.error(f'try to re-subscribe {sub_name} to light node: {{"times": {counter}, "error": {e}}}')
             continue
 
 
-async def subscribe_tx_light(filt, callback, logger: Logger, sub_name="light_pendTx_sub"):
+async def subscribe_tx_light(ws_light, filt, callback, logger: Logger, sub_name="light_pendTx_sub"):
     sub_infos = json.dumps({
         'm': 'subscribe',
         'p': 'txpool',
         'tx_filters': filt
     })
-    ws = WSconnect(CONNECTION[NETWORK]['light']['url'], {'auth': CONNECTION[NETWORK]['light']['auth']})
-    await subscribe_to_node(ws, sub_infos, callback, logger, sub_name)
+    await subscribe_to_node(ws_light, sub_infos, callback, logger, sub_name)
 
 
 # unsolved problem: https://github.com/ethereum/web3.py/issues/1487

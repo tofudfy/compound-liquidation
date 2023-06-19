@@ -90,7 +90,8 @@ ROUTS_TOKENS = {
     ],
     "BSC": [
         "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",  # WBNB
-        "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56"   # BUSD 
+        "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56",  # BUSD
+        "0x55d398326f99059fF775485246999027B3197955"   # USDT 
     ]
 }
 
@@ -142,16 +143,16 @@ class Routs(object):
 
         return amount_in, path
 
-    def find_routs(self, final_out, pools, swap_simulation, d):
+    def find_routs(self, final_out, pools, swap_simulation):
         final_in = -1
         paths = []
-        for depth in range(2, d, 1):
-            insert = depth - 2
-            amount_out = final_out
-            paths_temp = []
+        d = len(self.rout_tokens)
+        for insert in range(d+1):
             perm = list(permutations(self.rout_tokens, insert))
             for res in perm:
                 path = (self.token_out,) + res + (self.token_in,)
+                amount_out = final_out
+                paths_temp = []
                 for j in range(len(path)-1):
                     token_out = path[j]
                     token_in = path[j+1]
@@ -182,13 +183,13 @@ class RoutsCompV2(Routs):
     def __init__(self, token_in, token_out) -> None:
         super().__init__(token_in, token_out)
     
-    def find_routs(self, final_out, pools, swap_simulation, d):
+    def find_routs(self, final_out, pools, swap_simulation):
         if (self.token_out == self.token_in) and (self.token_out in COMP_NOT_DEBT_COL_AT_SAME):
             return -1, []
         # elif self.token_out == self.token_in:
         #     return final_out, []
         else:
-            return super().find_routs(final_out, pools, swap_simulation, d)
+            return super().find_routs(final_out, pools, swap_simulation)
 
 
 def gen_new_routs(token_in, token_out):
@@ -210,15 +211,7 @@ class Web3Swap(object):
         return self.w3.eth.contract(address=pair_addr, abi=self.abi.pool)
 
     def gen_pool_key(self, token0, token1):
-        is_token0 = token0 < token1
-        if is_token0:
-            key = token0+token1
-            token0_index = 0
-        else:
-            key = token1+token0
-            token0_index = 1
-
-        return key, token0_index
+        return gen_pool_key(token0, token1)
 
 
 class SwapV2(Web3Swap):
@@ -258,7 +251,7 @@ class SwapV2(Web3Swap):
     def swap_simulation(self, pool: Pool, amount_out: int, token_out_index: int):
         x = pool.liquidity[token_out_index] 
         y = pool.liquidity[1-token_out_index]
-        if x < amount_out:
+        if x < amount_out * 20:
             return -1
 
         # adjusted_amount_out =  amount_out * (10000 - pool.fee) 
@@ -371,19 +364,19 @@ def init_router_pools(w3_rout: SwapV3, reserves: List, ctoken_configs: Dict[str,
             token0 = ctoken_configs[reserves[i]].configs.underlying
             token1 = ctoken_configs[reserves[j]].configs.underlying
             w3_rout.add_liq_pool([token0, token1], identifier=identifier)
-            time.sleep(0.01)
+            time.sleep(0.1)
 
 
-def gen_pool_key(token0, token1):
-    is_token0 = token0 < token1
-    if is_token0:
-        key = token0+token1
-        token0_index = 0
+def gen_pool_key(token_a, token_b):
+    is_a_token0 = token_a < token_b
+    if is_a_token0:
+        key = token_a+token_b
+        token_a_index = 0
     else:
-        key = token1+token0
-        token0_index = 1
+        key = token_b+token_a
+        token_a_index = 1
 
-    return key, token0_index
+    return key, token_a_index
 
 
 def init_router_pools_test():

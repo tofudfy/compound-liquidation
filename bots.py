@@ -38,10 +38,11 @@ class BSCVenusPancakeV2(object):
         intput += '0x80'[2:].zfill(64)          # offset: 32 bytes
         intput += hex(len(paths))[2:].zfill(64) # lenght 
 
-        for path in paths:
+        for i in range(len(paths)-1, -1, -1):
+            path = paths[i]
             intput += path.pool_addr.lower()[2:].zfill(64)  # pair
             intput += hex(path.fee)[2:].zfill(64)           # repayAmount 
-            intput += str(path.is_zero_for_one).zfill(64)      # zero_for_one 
+            intput += str(path.is_zero_for_one).zfill(64)   # zero_for_one 
             intput += path.token0.lower()[2:].zfill(64)     # token0
             intput += path.token1.lower()[2:].zfill(64)     # token1
             intput += hex(path.amount_out)[2:].zfill(64)    # repayAmount 

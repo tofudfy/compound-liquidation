@@ -119,7 +119,7 @@ def get_signed_transfer(from_account_index, to_account_index, val=0):
     acc_from.nonce = w3.eth.get_transaction_count(acc_from.get_address())
     acc_to = AccCompound(SECRET_KEYS['BNB48'][to_account_index])
 
-    tx, _ = create_type0_tx(10000000000, value=val)
+    tx, _ = create_type0_tx(10000000000, 0, 0, value=val)
     tx['nonce'] = acc_from.nonce
     tx['to'] = acc_to.get_address()
     print(tx)

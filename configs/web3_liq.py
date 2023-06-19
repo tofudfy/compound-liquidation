@@ -94,8 +94,9 @@ class Web3Liquidation(object):
             return True
         else:
             return False
+    
 
-
+# unused
 class ConfigsLiquidation(object):
     def __init__(self):
         self.w3_liq = Web3Liquidation()

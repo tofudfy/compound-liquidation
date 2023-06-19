@@ -218,7 +218,7 @@ def complete_ctokens_configs_info(obj: Dict[str, CtokenInfos], w3_liq: Web3Compo
         '''
         ctoken_configs = w3_liq.query_ctokens_configs(ctoken_addr, identifier)
         obj[ctoken_addr].configs = ctoken_configs
-        time.sleep(0.01)
+        time.sleep(0.1)
 
 
 def complete_ctokens_risks(obj: Dict[str, CtokenInfos], w3_liq: Web3Liquidation, reserves: List):
@@ -226,12 +226,12 @@ def complete_ctokens_risks(obj: Dict[str, CtokenInfos], w3_liq: Web3Liquidation,
         ctoken_contract = w3_liq.gen_ctokens(ctoken_addr)
         obj[ctoken_addr].risks.reserve_factor = ctoken_contract.functions.reserveFactorMantissa().call() # todo: block_identifier=identifier
         obj[ctoken_addr].risks.exchange_rate = ctoken_contract.functions.exchangeRateStored().call() # block_identifier=identifier
-        time.sleep(0.01)
+        time.sleep(0.1)
 
         # todo: venus protocol may have different interface
         try:
             obj[ctoken_addr].risks.protocol_seized = ctoken_contract.functions.protocolSeizeShareMantissa().call() # block_identifier=identifier
-            time.sleep(0.01)
+            time.sleep(0.1)
         except:
             pass
 

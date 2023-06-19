@@ -20,8 +20,8 @@ from configs.protocol import complete_ctokens_configs_info
 from configs.router import init_router_pools, Routs, Pool, SwapV2, SwapV3, ABIUniV3, ABIUniV2, ROUTS_TOKENS
 from configs.vai import VaiState
 from transaction.send import init_send_type
-from compound import LiqPair, liquidation_simulation, profit_simulation, signal_calculate_health_factor, signal_simulate_health_factor, start_multi_process, DESIRED_PROFIT_SCALE
-from utils import TxFees, FakeLogger, FakePool, state_diff_aggr_price, subscribe_event_light, send_msg_tenderly, state_diff_uniswap_anchor_price
+from compound import SSL_CTX, LiqPair, liquidation_simulation, profit_simulation, signal_calculate_health_factor, signal_simulate_health_factor, start_multi_process, DESIRED_PROFIT_SCALE
+from utils import TxFees, FakeLogger, FakePool, WSconnect, state_diff_aggr_price, subscribe_event_light, send_msg_tenderly, state_diff_uniswap_anchor_price, subscribe_header_full
 from tx import create_type0_tx, init_accounts
 from bots import BSCVenusPancakeV2
 
@@ -64,13 +64,14 @@ def subscribe_callback(response: LogReceiptLight):
 
 
 async def cal_users_states_test():
-    w3_liq = Web3CompoundVenues('http4') 
+    provider = 'http4'
+    w3_liq = Web3CompoundVenues(provider) 
     # w3_liq = Web3CompoundV3('http2')
 
     # case4(miss): 
-    block_num = 29166645 - 1
-    user = "0x87a7C9c299b4c894e4BF126DB1F796219B6aDc05"
-    sig_hash = "0x69d2bbeacf10c1fe485f50cd86a5275655d8eb488824e4a75b455ebbd3822274"
+    block_num = 29218112 - 1
+    user = "0xea16c182CE54e663EFd64d1c26214Da6Efd382Ea"
+    sig_hash = "0x9c9dafb6acf2c9bb7bd42aea253db9634447b0ee92c66f9e2fa61c00c1a4e11c"
 
     # Step1: find short fall
     comet = w3_liq.gen_comptroller()
@@ -121,7 +122,7 @@ async def cal_users_states_test():
 
     # Step6: fetch router infos onchain 
     # router init should after ctoken configs init
-    routers = SwapV2(ABIUniV2('pancakge_v2'), 25)
+    routers = SwapV2(ABIUniV2('pancakge_v2'), 25, provider_type=provider)
     # routers = SwapV3(ABIUniV3())
     init_router_pools(routers, reserves_trim, states.ctokens, "latest")
 
@@ -138,7 +139,7 @@ async def cal_users_states_test():
 
     # Step7.1: calculate liquidations of single user
     # (2) liquidation simulate with routers
-    pair_with_routs = profit_simulation(states.ctokens, liq_pairs, routers.pools, routers.swap_simulation, depth=5)
+    pair_with_routs = profit_simulation(states.ctokens, liq_pairs, routers.pools, routers.swap_simulation)
     if pair_with_routs is not None:
         liq_pair: LiqPair = pair_with_routs[0]
         revenue = liq_pair.profit
@@ -316,6 +317,28 @@ def light_node_sub_test():
     asyncio.run(subscribe_event_light(event_vai_repay.gen_events_filter(), None, None, "light_event_vai_sub"))
 
 
+def head_sub_callback(message):
+    # copy from compound.py def on_message
+    if 'params' in message and 'result' in message['params']:
+        result = message['params']['result']
+
+        validator = Web3.toChecksumAddress(result['miner'])
+        block_number = int(result['number'], 16)
+        block_timestamp = int(result['timestamp'], 16)
+        base_fee = result['baseFeePerGas']
+        if base_fee == "None" or base_fee is None:
+            base_fee = 0
+        else:
+            base_fee = int(base_fee, 16)
+
+
+def full_node_head_sub_test():
+    ws_full = WSconnect(CONNECTION[NETWORK]['ws_ym'], ssl=SSL_CTX)
+    logger = FakeLogger()
+    
+    asyncio.run(subscribe_header_full(ws_full, head_sub_callback, logger))
+
+
 def users_reload_test():
     w3_liq = Web3CompoundVenues()
     reserves = RESERVES 
@@ -389,15 +412,20 @@ def users_trimming_test():
 
 
 if __name__ == '__main__':
+    # category 1: liquidation simulation
     asyncio.run(cal_users_states_test())
     # simulate_user_liq()
 
-    # users_trimming_test()
-
+    # category 2: node subsription 
     # subscribe_test(subscribe_callback)
     # light_node_sub_test()
-    # users_reload_test()
+    # full_node_head_sub_test()
 
+    # category 3: reload users from local files
+    # users_reload_test()
+    # users_trimming_test()
+
+    # category 4: Web3 python testing 
     # update_user_at_height_test()
     # get_log_test()
     # get_raw_transaction_test('0x35f9064abc88e48edf6cd42613ebf0717cb443e27b7cb1756740c03ca18ffe4f')

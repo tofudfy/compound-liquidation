@@ -277,7 +277,7 @@ def query_reserves_aggregator(w3_liq: Web3CompoundVenues, reserves: List, ctoken
         aggregator_offchain = w3_liq.gen_aggregator(aggregator)
         descr = aggregator_offchain.functions.description().call()
         price_decimals = aggregator_offchain.functions.decimals().call() 
-        time.sleep(0.01)
+        time.sleep(0.1)
 
         aggr_lower = aggregator.lower()
         if dic.get(aggr_lower, None) is None:
@@ -361,7 +361,7 @@ def complete_ctokens_price_info(obj: Dict[str, CtokenInfos], w3_liq: Web3Liquida
         ctoken_price = init_ctoken_price(w3_liq, ctoken_addr, identifier)
         obj[ctoken_addr].price = ctoken_price
         print(ctoken_addr, ctoken_price.price_current)
-        time.sleep(0.01)
+        time.sleep(0.1)
 
 
 def tx_filter_test():

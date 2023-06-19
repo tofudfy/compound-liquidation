@@ -1,8 +1,11 @@
 import logging
 import ssl
 import certifi
+
+from typing import List
 from web3 import Web3
 from types_light import LogReceiptLight, converter
+from muxprovider import MuxProvider
 
 # NOTICE: modify the argument to configure network and project
 # configs: protocol
@@ -54,20 +57,25 @@ CONNECTION = {
     'BSC': {
         'chain_id': 56,
         'ipc': "/data/bsc/2/geth/geth.ipc",
+        
         'http': "https://skilled-twilight-lambo.bsc.discover.quiknode.pro/6954660fddce3df1513d923a32e91364dcb95659/",
         'http2': "https://bsc.getblock.io/51c4e58e-a3dd-4708-a298-bbd69bc1be37/mainnet/",
         'http3': "https://few-autumn-asphalt.bsc.discover.quiknode.pro/64bec924a8164cc619888113074e0c91b738963d/",
         'http4': "https://withered-crimson-choice.bsc.discover.quiknode.pro/ed564a1ea9c1b5543f56c6338d742d3e260c838b/",
         'http5': "https://purple-quiet-snow.bsc.discover.quiknode.pro/459b37d8b2753ea10e6c68d0bf48612af60b8bc6/",
-        'http_local': "http://127.0.0.1:9545",
-        'ws': "wss://skilled-twilight-lambo.bsc.discover.quiknode.pro/6954660fddce3df1513d923a32e91364dcb95659/",
-        'http_ym': "https://cool-skilled-surf.bsc.discover.quiknode.pro/bc77724f837002bf73e399f13070bf8772923f8c/",
+        'http6': "https://serene-sparkling-snowflake.bsc.discover.quiknode.pro/e80fc0ed1e8821972a6e6865d27d8339274833f6/",
+        # 'http_ym': "https://cool-skilled-surf.bsc.discover.quiknode.pro/bc77724f837002bf73e399f13070bf8772923f8c/",
         'http_bh': "https://red-floral-isle.bsc.discover.quiknode.pro/8a747ed5a4995c01df6d9bfb87af1950c50a53bc/",
         'http_sq': "https://restless-compatible-replica.bsc.discover.quiknode.pro/5f5319206b948888b3a54b091d8060d8878d3be4/",
         'http_qy': "https://bitter-bold-log.bsc.discover.quiknode.pro/dc0a3950da7629d8ee3384709a0bc03f7c43b78e/",
         'http_xp': "https://weathered-methodical-layer.bsc.discover.quiknode.pro/5a7b5d47fb1d2ac61d6ad29acdf2aac08d8d36c9/",
+        # 'http_local': "http://127.0.0.1:9545",
+
+        'ws': "wss://skilled-twilight-lambo.bsc.discover.quiknode.pro/6954660fddce3df1513d923a32e91364dcb95659/",
+        'ws_ym': "wss://cool-skilled-surf.bsc.discover.quiknode.pro/bc77724f837002bf73e399f13070bf8772923f8c/",
+        'ws_ym2': "wss://bsc.getblock.io/51c4e58e-a3dd-4708-a298-bbd69bc1be37/mainnet/",
         'ws_local': "ws://localhost:9546",
-        'ws_ym': "wss://bsc.getblock.io/51c4e58e-a3dd-4708-a298-bbd69bc1be37/mainnet/",
+
         'light': {
             'url': "ws://localhost:51316",
             'auth': "085da4b6a041efcef1ef681e5c9c"
@@ -235,15 +243,31 @@ def query_oracle_anchor_configs(w3_comp: Web3Liquidation):
 '''
 
 
+def gen_endpoints() -> List:
+    endpoints = []
+    for key, url in URL.items():
+        if 'http' not in key:
+            continue
+
+        endpoints.append(url)
+
+    return endpoints
+
+
 def load_provider(provider_type):
-    provider = CONNECTION[NETWORK][provider_type]
     if 'ipc' in provider_type:
-        provider = Web3.IPCProvider(provider, timeout=30)
+        url = CONNECTION[NETWORK][provider_type]
+        provider = Web3.IPCProvider(url, timeout=30)
     elif 'ws' in provider_type:
+        url = CONNECTION[NETWORK][provider_type]
         ssl_context = ssl.create_default_context(cafile=CAFILE)
-        provider = Web3.WebsocketProvider(provider, websocket_kwargs={"ssl": ssl_context})
+        provider = Web3.WebsocketProvider(url, websocket_kwargs={"ssl": ssl_context})
+    elif 'mux' == provider_type:
+        urls = gen_endpoints()
+        provider = MuxProvider(urls)
     else:
-        provider = Web3.HTTPProvider(provider, request_kwargs={'timeout': 30})
+        url = CONNECTION[NETWORK][provider_type]
+        provider = Web3.HTTPProvider(url, request_kwargs={'timeout': 30})
 
     return provider
 
@@ -258,3 +282,7 @@ def subscribe_callback(obj, response: LogReceiptLight):
     for log in logs:
         obj.update(log)
     obj.last_update = block_num
+
+
+if __name__ == "__main__":
+    print(gen_endpoints())

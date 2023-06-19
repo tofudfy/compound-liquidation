@@ -28,13 +28,3 @@ def create_type0_tx(gas_fee, base_fee, mev, value=0, gas=22000):
     }
 
     return tx, tx["gasPrice"]
-
-
-def create_self_transfer(gas_fee, acc: AccCompound):
-    tx, _ = create_type0_tx(gas_fee)
-    tx['to'] = acc.get_address()
-    tx['nonce'] = acc.nonce
-    acc.nonce += 1
-
-    signed_tx_raw, hash = acc.sign_tx(tx)
-    return signed_tx_raw.hex()

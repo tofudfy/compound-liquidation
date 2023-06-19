@@ -13,6 +13,7 @@ import json
 import signal
 import sys
 import blxr_rlp
+import ssl
 
 from logger import Logger
 from web3 import Web3
@@ -47,7 +48,9 @@ from transaction.account import AccCompound
 LOG_DIRECTORY = "./"  # "/data/fydeng/"
 DESIRED_PROFIT_SCALE = 10 * EXP_SCALE  # in USD
 HF_THRESHOLD = 1
-
+# todo: query every init
+TREASURY_PERCENT = 50000000000000000
+SSL_CTX = ssl._create_unverified_context()
 
 def on_message(message: Dict):
     """
@@ -85,10 +88,11 @@ def on_message(message: Dict):
         block_number = int(result['number'], 16)
         block_timestamp = int(result['timestamp'], 16)
         base_fee = result['baseFeePerGas']
-        if base_fee == "None":
+        if base_fee == "None" or base_fee is None:
             base_fee = 0
         else:
             base_fee = int(base_fee, 16)
+        
         gas_price = w3_liq.w3.eth.gas_price
 
         # task 1: Update the local block number, timestamp, and base fee
@@ -121,13 +125,12 @@ async def get_pending_callback(message):
         await pt_prof_wrap(t)
 
 
-async def get_pending_transactions_light(callback):
+async def get_pending_transactions_light(ws_conn: WSconnect, callback):
     counter = 0
     while True:
         counter += 1
         try:
-            async with connect(CONNECTION[NETWORK]['light']['url'], ping_interval=None,
-                            extra_headers={'auth': CONNECTION[NETWORK]['light']['auth']}) as ws:
+            async with connect(ws_conn.url, ping_interval=None, extra_headers=ws_conn.headers) as ws:
                 await ws.send(
                     json.dumps({
                         'm': 'subscribe',
@@ -532,9 +535,8 @@ def flash_expire(block_num):
    return block_num + SIG_DELAY_MAX
 
 
-async def tx_send_and_tracking_subscribe(callback, logger):
-    async with connect(CONNECTION[NETWORK]['light']['url'],
-                extra_headers={'auth': CONNECTION[NETWORK]['light']['auth']}) as ws:
+async def tx_send_and_tracking_subscribe(ws_conn: WSconnect, callback, logger):
+    async with connect(ws_conn.url, extra_headers=ws_conn.headers) as ws:
 
         # 收交易回执与发交易的ws了解请用同一个
         try:
@@ -681,7 +683,7 @@ def liquidation_simulation(reserves: Dict[str, CompReserve], ctk: Dict[str, Ctok
                 # seize_tokens -= seize_tokens * ctk[ctoken_addr].risks.protocol_seized // EXP_SCALE
                 # charged by venus liquidator.sol to treasury
                 # ref: https://bscscan.com/address/0x0be68b10dfb2e303d3d0a51cd8368fb439e46409#code: _splitLiquidationIncentive
-                seize_tokens = seize_tokens * 50000000000000000 / com.liq_incentive  # treary_percent = 50000000000000000
+                seize_tokens -= seize_tokens * TREASURY_PERCENT // com.liq_incentive
                 
                 # refer to getHypotheticalAccountLiquidityInternal
                 profit_apprx = (seize_tokens * exchange_rate // EXP_SCALE * price - rejust_repay_amount * debt_price) // EXP_SCALE
@@ -701,7 +703,7 @@ def liquidation_simulation(reserves: Dict[str, CompReserve], ctk: Dict[str, Ctok
     return liquidation_pair
 
 
-def profit_simulation(ctk: Dict[str, CtokenInfos], liq_pairs: Dict[str, List[LiqPair]], pools: Dict[str, Pool], swap_func, depth=5):
+def profit_simulation(ctk: Dict[str, CtokenInfos], liq_pairs: Dict[str, List[LiqPair]], pools: Dict[str, Pool], swap_func):
     max_profit = 0
 
     target = None
@@ -717,7 +719,7 @@ def profit_simulation(ctk: Dict[str, CtokenInfos], liq_pairs: Dict[str, List[Liq
             token_in = ctk[col_ctoken].configs.underlying
             token_out = ctk[debt_ctoken].configs.underlying
             routs = gen_new_routs(token_in, token_out)
-            swap_tokens, paths = routs.find_routs(pair.repay_amount, pools, swap_func, depth)
+            swap_tokens, paths = routs.find_routs(pair.repay_amount, pools, swap_func)
             if swap_tokens <= 0 and len(paths) == 0:
                 continue
             else:
@@ -732,7 +734,7 @@ def profit_simulation(ctk: Dict[str, CtokenInfos], liq_pairs: Dict[str, List[Liq
             pair.profit = profit_actual
 
             # routs_usdc = Routs(token_in, "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")  # todo: temp address
-            # swap_tokens_usdc, paths_usdc = routs_usdc.find_routs(seize_tokens_left, pools, swap_func, depth)
+            # swap_tokens_usdc, paths_usdc = routs_usdc.find_routs(seize_tokens_left, pools, swap_func)
             # pair.profit = profit_actual = swap_tokens_usdc 
 
             if profit_actual > max_profit:
@@ -1166,21 +1168,21 @@ def get_reserves_value(token_addr, amount, is_col=False):
 
 async def main():
     tasks = [
-        asyncio.create_task(subscribe_event_light(states.gen_states_filter(reserves_init), users_subscribe_callback, logger, "light_users_sub")),
-        # asyncio.create_task(subscribe_event_full(states.gen_states_filter(reserves_init), users_subscribe_callback_full, logger, "full_users_sub")),
-        asyncio.create_task(subscribe_event_light(gen_comet_filter(), comet_subscribe_callback, logger, "light_comet_sub")),
-        asyncio.create_task(subscribe_event_light(gen_signals_filter(signals), signals_subscribe_callback, logger, "light_price_sub")),
-        # asyncio.create_task(subscribe_event_full(gen_signals_filter(signals), signals_subscribe_callback_full, logger, "full_price_sub")),
-        asyncio.create_task(subscribe_event_light(gen_liquidation_filter(reserves_init), liquidations_subscribe_callback, logger, "light_liquidations_sub")),
-        # asyncio.create_task(subscribe_event_full(gen_liquidation_filter(reserves_init), liquidations_subscribe_callback_full, logger, "full_liquidations_sub")),
+        asyncio.create_task(subscribe_event_light(ws_light, states.gen_states_filter(reserves_init), users_subscribe_callback, logger, "light_users_sub")),
+        # asyncio.create_task(subscribe_event_full(ws_full, states.gen_states_filter(reserves_init), users_subscribe_callback_full, logger, "full_users_sub")),
+        asyncio.create_task(subscribe_event_light(ws_light, gen_comet_filter(), comet_subscribe_callback, logger, "light_comet_sub")),
+        asyncio.create_task(subscribe_event_light(ws_light, gen_signals_filter(signals), signals_subscribe_callback, logger, "light_price_sub")),
+        # asyncio.create_task(subscribe_event_full(ws_full, gen_signals_filter(signals), signals_subscribe_callback_full, logger, "full_price_sub")),
+        asyncio.create_task(subscribe_event_light(ws_light, gen_liquidation_filter(reserves_init), liquidations_subscribe_callback, logger, "light_liquidations_sub")),
+        # asyncio.create_task(subscribe_event_full(ws_full, gen_liquidation_filter(reserves_init), liquidations_subscribe_callback_full, logger, "full_liquidations_sub")),
 
-        asyncio.create_task(subscribe_header_full(on_message, logger)),
+        asyncio.create_task(subscribe_header_full(ws_full, on_message, logger)),
 
-        # asyncio.create_task(subscribe_tx_light(signals.signals_event_filter_light, get_pending_callback, logger, "light_pendSig_sub")),
-        asyncio.create_task(get_pending_transactions_light(pt_prof_wrap)),
+        # asyncio.create_task(subscribe_tx_light(ws_light, signals.signals_event_filter_light, get_pending_callback, logger, "light_pendSig_sub")),
+        asyncio.create_task(get_pending_transactions_light(ws_light, pt_prof_wrap)),
 
         asyncio.create_task(liquidation_idel(liquidation_idle_callback)),
-        asyncio.create_task(tx_send_and_tracking_subscribe(process_receipts, logger))
+        asyncio.create_task(tx_send_and_tracking_subscribe(ws_light, process_receipts, logger))
     ]
 
     await asyncio.gather(*tasks)
@@ -1194,9 +1196,8 @@ def print_send_transactions(results):
         logger.info(f'send transaction: {{"index":"{index}", "hash":"{hash.hex()}"}}')
 
 
-async def pre_set(results):
-    async with connect(CONNECTION[NETWORK]['light']['url'],
-        extra_headers={'auth': CONNECTION[NETWORK]['light']['auth']}) as ws:
+async def pre_set(ws_conn: WSconnect, results):
+    async with connect(ws_conn.url, extra_headers=ws_conn.headers) as ws:
 
         coroutines = execution_select(signal_simulate_health_factor, "liq", results, (states.ctokens, comet, block_infos, routers.pools, routers.swap_simulation, accounts, None, send_type, logger,))
         
@@ -1231,14 +1232,17 @@ if __name__ == '__main__':
     liq_onchain.get_reserves_value = get_reserves_value
     liq_onchain.w3_liqcall = Web3LiqListening()
 
-    print("Init states from local file ...")
+    ws_light = WSconnect(CONNECTION[NETWORK]['light']['url'], {'auth': CONNECTION[NETWORK]['light']['auth']})
+    ws_full = WSconnect(CONNECTION[NETWORK]['ws_ym'], ssl=SSL_CTX)
+    # ws_full = WSconnect(CONNECTION[NETWORK]['ws_local'])
 
     # Config: protocol selection
-    provider = 'http_xp'
+    provider = 'mux'
     w3_liq = Web3CompoundVenues(provider)
     # w3_liq = Web3CompoundV3()
     contract = BSCVenusPancakeV2()
 
+    print("Init states from local file ...")
     # reload users and token infos and sync to latest block
     reserves_init = w3_liq.query_markets_list()
     states = reload_states(reserves_init)
@@ -1307,7 +1311,7 @@ if __name__ == '__main__':
     print("Precalculate users volume ...")
     # pre calculation in order to generate hot states
     results = complete_states_info(states)
-    asyncio.run(pre_set(results))
+    asyncio.run(pre_set(ws_light, results))
     states = HighProfitSates(states, DESIRED_PROFIT_SCALE)
 
     print("Prefiltering users volume ...")

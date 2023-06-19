@@ -2,7 +2,7 @@ import time
 import asyncio
 from flashbots import flashbot
 from configs.config import BNB48
-from transaction.types import create_self_transfer, create_type0_tx, create_type2_tx
+from transaction.types import create_type0_tx, create_type2_tx
 from transaction.bnb48 import Bnb48
 from transaction.account import SECRET_KEYS, AccCompound
 
@@ -95,6 +95,16 @@ class WsSender(Sender):
             tasks.append(asyncio.create_task(self.send_tx_task(signed_tx_raw)))
 
         await asyncio.gather(*tasks)
+
+
+def create_self_transfer(gas_fee, acc: AccCompound):
+    tx, _ = create_type0_tx(gas_fee, 0, 0)
+    tx['to'] = acc.get_address()
+    tx['nonce'] = acc.nonce
+    acc.nonce += 1
+
+    signed_tx_raw, _ = acc.sign_tx(tx)
+    return signed_tx_raw.hex()
 
 
 class BnB48Sender(Sender):
