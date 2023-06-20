@@ -96,7 +96,7 @@ ROUTS_TOKENS = {
 }
 
 class Path(object):
-    def __init__(self, pool_addr: str, token0: str, token1: str, is_zero_for_one: int, fee: int, amount_out: int):
+    def __init__(self, pool_addr: str, fee: int, is_zero_for_one: int, token0: str, token1: str, amount_out: int):
         self.pool_addr = pool_addr
         self.fee = fee
         self.token0 = token0

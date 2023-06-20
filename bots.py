@@ -54,13 +54,13 @@ class BSCVenusPancakeV2(object):
 # or use tenderly to check the data
 def bsc_venus_cakev2_test():
     w3_liq = Web3CompoundVenues()
-    bot = w3_liq.gen_bot()
+    bot_sc = w3_liq.gen_bot()
     params = (
         "0x00000000219ab540356cBB839Cbe05303d7705Fa",
         "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
         "0xBE0eB53F46cd790Cd13851d5EFf43D12404d33E8",
         [
-            (
+            Path(
                 "0xDA9dfA130Df4dE4673b89022EE50ff26f6EA73Cf",
                 25,
                 0,
@@ -68,7 +68,7 @@ def bsc_venus_cakev2_test():
                 "0x47ac0Fb4F2D84898e4D9E7b4DaB3C24507a6D503",
                 1000
             ),
-            (
+            Path(
                 "0x2B6eD29A95753C3Ad948348e3e7b1A251080Ffb9",
                 25,
                 1,
@@ -79,8 +79,14 @@ def bsc_venus_cakev2_test():
         ]
     )
 
+    bot = BSCVenusPancakeV2()
+    
+
+    res = bot.gen(*params)
+    print(res)
+
     encoded_data = encode(['address', 'address', 'address', 'tuple[]'], params)
-    tx = bot.functions.swap(encoded_data).build_transaction({'from': "0x4153aEf7bf3c7833b82B8F2909b590DdcF6f8c15"})
+    tx = bot_sc.functions.swap(encoded_data).build_transaction({'from': "0x4153aEf7bf3c7833b82B8F2909b590DdcF6f8c15"})
     print(tx)
 
 
@@ -159,5 +165,5 @@ def gen_contract_data():
 
 
 if __name__ == '__main__':
-    # bsc_venus_cakev2_test()
-    gen_function_sig()
+    bsc_venus_cakev2_test()
+    # gen_function_sig()

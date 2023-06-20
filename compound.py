@@ -161,7 +161,8 @@ async def get_pending_transactions_light(ws_conn: WSconnect, callback):
                     logger.debug(f'pending tx listening out of control: {{"total_time": {stop-start}}}')
 
         except Exception as e:
-            logger.error(f"unable to connect to light node: {e}")
+            trace_string = traceback.format_exc()
+            logger.error(f"unable to connect to light node: {e}\n{trace_string}")
 
         if counter >= 3:
             raise Exception("connect to light nodes too many times")
@@ -872,10 +873,11 @@ def liquidation_start(index: int, usr: str, ctk: Dict[str, CtokenInfos], block_i
         intput = "0x"
         return []
     else:
+        contract = BSCVenusPancakeV2()
         intput = contract.gen(params[0], to_addr, params[2], routs.paths)
 
     tx['data'] = bytes.fromhex(intput[2:])
-    tx['to'] = bytes.fromhex(P_ALIAS['contract'][2:])
+    tx['to'] = P_ALIAS['contract'][2:]
     tx["chainId"] = CONNECTION[NETWORK]['chain_id'] # todo: temp solution
     
     set_user_liquidated(index, [params[0], to_addr, params[1]])
@@ -1240,7 +1242,6 @@ if __name__ == '__main__':
     provider = 'mux'
     w3_liq = Web3CompoundVenues(provider)
     # w3_liq = Web3CompoundV3()
-    contract = BSCVenusPancakeV2()
 
     print("Init states from local file ...")
     # reload users and token infos and sync to latest block

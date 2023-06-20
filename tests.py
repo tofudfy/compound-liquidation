@@ -96,7 +96,7 @@ async def cal_users_states_test():
 
     # states override
     # must added, or the seize token caculated in liquidation_simulation may be inaccurate
-    # states.ctokens["0x70e36f6BF80a52b3B46b3aF8e106CC0ed743E8e4"].price.price_current = 33749697000000000000
+    states.ctokens["0x882C173bC7Ff3b7786CA16dfeD3DFFfb9Ee7847B"].price.price_current = 26603536412480000000000
     # states.users_states[user].reserves['0xB248a295732e0225acd3337607cc01068e3b9c10'].col_amount = 16809956189565
 
     # Step4: Init multiprocessing
@@ -160,11 +160,14 @@ async def cal_users_states_test():
     sig = {"hash": sig_hash, 'gas_price': 3000000000}
     logger=FakeLogger()
 
-    # targets = [res]
-    # map_func = signal_simulate_health_factor
-    # args_par = (states.ctokens, comet, block_num, routers.pools, accounts, sig, logger)
-    # args = (targets,) + args_par
-    # coroutines = map_func(*args)
+    send_type = init_send_type(NETWORK)
+    block_infos = BlockInfos(block_num, None, 0)
+
+    targets = [res]
+    map_func = signal_simulate_health_factor
+    args_par = (states.ctokens, comet, block_infos, routers.pools, routers.swap_simulation, accounts, sig, send_type, logger)
+    args = (targets,) + args_par
+    coroutines = map_func(*args)
     # tasks = start_multi_process(multi_pool, targets, map_func, args_par)
     # await asyncio.gather(*tasks)
 
@@ -294,7 +297,7 @@ def liquidate_directly_test(w3_liq: Web3Liquidation, ctk: Dict[str, CtokenInfos]
     print(tx_nex)
 
     return send_msg_tenderly(tx_nex, state_diff, block_num)
-
+    
 
 # RoutsCompV2
 def liquidate_from_flash_loan(to_addr, params, rout: Routs):

@@ -128,7 +128,7 @@ COMPOUND = {
             'comet_configs_file': "users/comet_configs_bsc_compound_venus.json",
             'users_file': "users/users_bsc_compound_venus.json",
             'users_file_status': 1,  # 1 for continue; 0 for init from template
-            'contract': "0x75efFC31fc16Cf1fd8747dbc0c20C509c4b9740E"
+            'contract': "0x57e0148EBA3eaB22295d668757BBF41a338E9bca"
         }
     }
 }
